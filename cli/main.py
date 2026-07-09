@@ -19,6 +19,7 @@ from rich.table import Table
 from rich.text import Text
 
 from cli.announcements import display_announcements, fetch_announcements
+from cli.models import AssetType
 from cli.stats_handler import StatsCallbackHandler
 from cli.utils import (
     ask_anthropic_effort,
@@ -28,6 +29,7 @@ from cli.utils import (
     ask_openai_reasoning_effort,
     ask_output_language,
     ask_qwen_region,
+    canonicalize_analysis_date,
     confirm_ollama_endpoint,
     detect_asset_type,
     ensure_api_key,
@@ -39,8 +41,9 @@ from cli.utils import (
     select_llm_provider,
     select_research_depth,
     select_shallow_thinking_agent,
+    select_timeframe,
 )
-from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.default_config import DEFAULT_CONFIG, validate_timeframe
 from tradingagents.graph.analyst_execution import (
     AnalystWallTimeTracker,
     build_analyst_execution_plan,
@@ -549,16 +552,40 @@ def get_user_selections():
             f"[green]Detected asset type:[/green] {asset_type.value}"
         )
 
+    # Crypto-only: pick the bar interval before the date prompt, since the
+    # accepted date format depends on it. Other asset types keep today's
+    # daily-only flow with no extra prompt (crypto-first scope). No step
+    # number so the numbering stays identical for non-crypto runs, like the
+    # provider-region sub-prompts.
+    if asset_type == AssetType.CRYPTO and not os.environ.get("TRADINGAGENTS_TIMEFRAME"):
+        console.print(
+            create_question_box(
+                "Trading Timeframe",
+                "Select the bar interval: daily (EOD) or 4-hour day trading",
+                "1d",
+            )
+        )
+    timeframe = select_timeframe(asset_type)
+    if timeframe != "1d":
+        console.print(f"[green]Selected timeframe:[/green] {timeframe}")
+
     # Step 2: Analysis date
-    default_date = datetime.datetime.now().strftime("%Y-%m-%d")
+    if timeframe == "1d":
+        default_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        date_prompt = "Enter the analysis date (YYYY-MM-DD)"
+    else:
+        default_date = datetime.datetime.now(datetime.timezone.utc).strftime(
+            "%Y-%m-%d %H:%M"
+        )
+        date_prompt = "Enter the analysis date or UTC timestamp (YYYY-MM-DD [HH:MM])"
     console.print(
         create_question_box(
             "Step 2: Analysis Date",
-            "Enter the analysis date (YYYY-MM-DD)",
+            date_prompt,
             default_date,
         )
     )
-    analysis_date = get_analysis_date()
+    analysis_date = get_analysis_date(timeframe)
 
     # Step 3: Output language (skipped when set via TRADINGAGENTS_OUTPUT_LANGUAGE)
     if os.environ.get("TRADINGAGENTS_OUTPUT_LANGUAGE"):
@@ -714,6 +741,7 @@ def get_user_selections():
     return {
         "ticker": selected_ticker,
         "asset_type": asset_type.value,
+        "timeframe": timeframe,
         "analysis_date": analysis_date,
         "analysts": selected_analysts,
         "research_depth": selected_research_depth,
@@ -728,23 +756,20 @@ def get_user_selections():
     }
 
 
-def get_analysis_date():
-    """Get the analysis date from user input."""
-    while True:
-        date_str = typer.prompt(
-            "", default=datetime.datetime.now().strftime("%Y-%m-%d")
+def get_analysis_date(timeframe: str = "1d"):
+    """Get the analysis date (or UTC timestamp, in 4h mode) from user input."""
+    if timeframe == "1d":
+        default = datetime.datetime.now().strftime("%Y-%m-%d")
+    else:
+        default = datetime.datetime.now(datetime.timezone.utc).strftime(
+            "%Y-%m-%d %H:%M"
         )
+    while True:
+        date_str = typer.prompt("", default=default)
         try:
-            # Validate date format and ensure it's not in the future
-            analysis_date = datetime.datetime.strptime(date_str, "%Y-%m-%d")
-            if analysis_date.date() > datetime.datetime.now().date():
-                console.print("[red]Error: Analysis date cannot be in the future[/red]")
-                continue
-            return date_str
-        except ValueError:
-            console.print(
-                "[red]Error: Invalid date format. Please use YYYY-MM-DD[/red]"
-            )
+            return canonicalize_analysis_date(date_str, timeframe)
+        except ValueError as exc:
+            console.print(f"[red]Error: {exc}[/red]")
 
 
 def save_report_to_disk(final_state, ticker: str, save_path: Path):
@@ -981,11 +1006,16 @@ def _build_run_config(selections: dict, checkpoint: bool | None) -> dict:
     config["openai_reasoning_effort"] = selections.get("openai_reasoning_effort")
     config["anthropic_effort"] = selections.get("anthropic_effort")
     config["output_language"] = selections.get("output_language", "English")
+    # Bar interval: "1d" unless the user opted into 4h day trading (crypto
+    # only). select_timeframe already honors TRADINGAGENTS_TIMEFRAME, so a
+    # plain assignment preserves env precedence; validate_timeframe re-checks
+    # the timeframe/vendor combination on the final merged config.
+    config["timeframe"] = selections.get("timeframe", "1d")
     # --checkpoint/--no-checkpoint overrides only when explicitly given; omitting
     # the flag preserves TRADINGAGENTS_CHECKPOINT_ENABLED / the default (#976).
     if checkpoint is not None:
         config["checkpoint_enabled"] = checkpoint
-    return config
+    return validate_timeframe(config)
 
 
 def run_analysis(checkpoint: bool | None = None):

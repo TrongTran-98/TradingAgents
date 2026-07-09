@@ -6,6 +6,8 @@ from dotenv import find_dotenv, set_key
 from rich.console import Console
 
 from cli.models import AnalystType, AssetType
+from tradingagents.dataflows.time_utils import parse_trade_datetime
+from tradingagents.default_config import canonicalize_timeframe
 from tradingagents.llm_clients.api_key_env import get_api_key_env
 from tradingagents.llm_clients.model_catalog import get_model_options
 
@@ -99,24 +101,55 @@ def filter_analysts_for_asset_type(
     ]
 
 
-def get_analysis_date() -> str:
-    """Prompt the user to enter a date in YYYY-MM-DD format."""
-    import re
-    from datetime import datetime
+def canonicalize_analysis_date(date_str: str, timeframe: str = "1d") -> str:
+    """Validate a user-entered analysis date and return the canonical trade_date.
 
-    def validate_date(date_str: str) -> bool:
-        if not re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
-            return False
+    Daily mode keeps today's contract: ``YYYY-MM-DD`` only, not in the future —
+    a timestamp is a user error and is rejected, never silently truncated.
+    4h mode also accepts ``YYYY-MM-DD HH:MM`` (24h clock, UTC) and always
+    returns the full timestamp form; date-only input reads as ``23:59`` of that
+    day, i.e. "the last closed 4H bar of that day". A future *time* on the
+    current UTC day is allowed (the data layer caps at the newest closed bar),
+    but a future *date* is rejected in both modes. Raises ``ValueError`` with a
+    user-facing message on invalid input.
+    """
+    from datetime import datetime, timezone
+
+    text = date_str.strip()
+    if timeframe == "1d":
         try:
-            datetime.strptime(date_str, "%Y-%m-%d")
-            return True
+            parsed = datetime.strptime(text, "%Y-%m-%d")
         except ValueError:
-            return False
+            raise ValueError("Invalid date format. Please use YYYY-MM-DD") from None
+        if parsed.date() > datetime.now().date():
+            raise ValueError("Analysis date cannot be in the future")
+        return text
+    parsed = parse_trade_datetime(text)
+    if " " not in text:
+        parsed = parsed.replace(hour=23, minute=59)
+    if parsed.date() > datetime.now(timezone.utc).date():
+        raise ValueError("Analysis date cannot be in the future")
+    return parsed.strftime("%Y-%m-%d %H:%M")
 
+
+def get_analysis_date(timeframe: str = "1d") -> str:
+    """Prompt for the analysis date (4h mode also accepts a UTC HH:MM time)."""
+
+    def validate_date(date_str: str):
+        try:
+            canonicalize_analysis_date(date_str, timeframe)
+            return True
+        except ValueError as exc:
+            return str(exc)
+
+    prompt = (
+        "Enter the analysis date (YYYY-MM-DD):"
+        if timeframe == "1d"
+        else "Enter the analysis date or UTC timestamp (YYYY-MM-DD [HH:MM]):"
+    )
     date = questionary.text(
-        "Enter the analysis date (YYYY-MM-DD):",
-        validate=lambda x: validate_date(x.strip())
-        or "Please enter a valid date in YYYY-MM-DD format.",
+        prompt,
+        validate=validate_date,
         style=questionary.Style(
             [
                 ("text", "fg:green"),
@@ -129,7 +162,7 @@ def get_analysis_date() -> str:
         console.print("\n[red]No date provided. Exiting...[/red]")
         exit(1)
 
-    return date.strip()
+    return canonicalize_analysis_date(date, timeframe)
 
 
 def select_analysts(asset_type: AssetType = AssetType.STOCK) -> list[AnalystType]:
@@ -194,6 +227,55 @@ def select_research_depth() -> int:
         exit(1)
 
     return choice
+
+
+def select_timeframe(asset_type: AssetType = AssetType.STOCK) -> str:
+    """Select the bar interval for the run: "1d" (daily) or "4h" (day trading).
+
+    Day-trading mode is crypto-only for now (24/7 UTC bars; equity session
+    calendars are an explicit follow-up), so any other asset type keeps
+    today's daily-only flow and no prompt is shown. TRADINGAGENTS_TIMEFRAME
+    skips the prompt, mirroring the env-precedence rule of the other
+    selection steps.
+    """
+    env_value = os.environ.get("TRADINGAGENTS_TIMEFRAME")
+    if asset_type != AssetType.CRYPTO:
+        if env_value and env_value.strip().lower() != "1d":
+            console.print(
+                f"[yellow]TRADINGAGENTS_TIMEFRAME={env_value} is only supported "
+                f"for crypto tickers; using daily bars for this run.[/yellow]"
+            )
+        return "1d"
+
+    if env_value:
+        timeframe = canonicalize_timeframe(env_value)
+        console.print(f"[green]✓ Timeframe from environment:[/green] {timeframe}")
+        return timeframe
+
+    choice = questionary.select(
+        "Select Your [Trading Timeframe]:",
+        choices=[
+            questionary.Choice(
+                "Daily — one decision per day (EOD bars)", value="1d"
+            ),
+            questionary.Choice(
+                "Day trading — one decision per closed 4-hour bar (UTC)",
+                value="4h",
+            ),
+        ],
+        instruction="\n- Use arrow keys to navigate\n- Press Enter to select",
+        style=questionary.Style(
+            [
+                ("selected", "fg:yellow noinherit"),
+                ("highlighted", "fg:yellow noinherit"),
+                ("pointer", "fg:yellow noinherit"),
+            ]
+        ),
+    ).ask()
+
+    # Daily is a sensible default, so a cancel falls back to it rather than
+    # exiting the run (same rule as the output-language prompt).
+    return choice or "1d"
 
 
 # Mainstream OpenRouter chat-LLM provider namespaces. We surface the newest

@@ -110,7 +110,7 @@ ticker up to a given timestamp, with no look-ahead.
       timestamp>")` in a REPL/script, print the tail of the frame, and
       confirm timestamps line up on 4H boundaries and the last row is
       actually closed (compare wall-clock time to bar close time).
-- [ ] `pytest tests/test_intraday_resample.py -v` passes.
+- [x] `pytest tests/test_intraday_resample.py -v` passes.
 
 ---
 
@@ -141,14 +141,14 @@ computable on the 4H frame from Phase 1, with a lookback expressed in bars
       parallel dispatch dimension.
 
 **Verification**:
-- [ ] Unit test computing `rsi`/`macd` on a known synthetic 4H frame,
+- [x] Unit test computing `rsi`/`macd` on a known synthetic 4H frame,
       asserting values match a manually verified reference (e.g. compute
       independently with `pandas`/`ta` or by hand for a short series).
-- [ ] Confirm no regression: existing daily indicator tests
+- [x] Confirm no regression: existing daily indicator tests
       ([tests/test_stockstats_date_column.py](../../tests/test_stockstats_date_column.py),
       [tests/test_market_toolnode.py](../../tests/test_market_toolnode.py))
       still pass unmodified.
-- [ ] `pytest tests/ -k "indicator or stockstats" -v` passes.
+- [x] `pytest tests/ -k "indicator or stockstats" -v` passes.
 
 ---
 
@@ -157,33 +157,33 @@ computable on the 4H frame from Phase 1, with a lookback expressed in bars
 **Goal**: a user can select "day trading (4H)" in the interactive CLI, or
 set it non-interactively, and it reaches the graph as config.
 
-- [ ] `DEFAULT_CONFIG["timeframe"] = "1d"` +
+- [x] `DEFAULT_CONFIG["timeframe"] = "1d"` +
       `TRADINGAGENTS_TIMEFRAME` env override (Phase 0).
-- [ ] CLI: add a `select_trading_style()`/`select_timeframe()` prompt in
+- [x] CLI: add a `select_trading_style()`/`select_timeframe()` prompt in
       [cli/utils.py](../../cli/utils.py) alongside `select_analysts` /
       `select_research_depth`, offered **only** when
       `detect_asset_type(ticker) == AssetType.CRYPTO` (per the crypto-first
       scope) — for other asset types, keep today's daily-only flow
       unchanged and skip the prompt entirely.
-- [ ] Update `get_analysis_date()` (Phase 0 datetime format) to accept and
+- [x] Update `get_analysis_date()` (Phase 0 datetime format) to accept and
       validate `YYYY-mm-dd HH:MM` when timeframe is `4h`, and keep
       `YYYY-mm-dd` validation unchanged for `1d`.
-- [ ] Wire the selection into whatever `selections` dict
+- [x] Wire the selection into whatever `selections` dict
       [cli/main.py](../../cli/main.py) builds before constructing
       `DEFAULT_CONFIG`/`TradingAgentsGraph`.
 
 **Verification**:
-- [ ] New test `tests/test_cli_timeframe_selection.py` mirroring
+- [x] New test `tests/test_cli_timeframe_selection.py` mirroring
       [tests/test_cli_symbol_handling.py](../../tests/test_cli_symbol_handling.py)
       style: assert the prompt only appears for crypto tickers, assert
       `TRADINGAGENTS_TIMEFRAME=4h` overrides the default per
       [tests/test_env_overrides.py](../../tests/test_env_overrides.py)
       conventions.
-- [ ] Manual run: `tradingagents` interactive CLI with ticker `BTC-USD`,
+- [x] Manual run: `tradingagents` interactive CLI with ticker `BTC-USD`,
       confirm the new prompt appears and a `4h`/`2026-07-08 12:00`-style
       input is accepted; with ticker `AAPL`, confirm the prompt is absent
       and behavior is identical to before this change.
-- [ ] `pytest tests/test_cli_timeframe_selection.py tests/test_cli_symbol_handling.py tests/test_env_overrides.py -v` passes.
+- [x] `pytest tests/test_cli_timeframe_selection.py tests/test_cli_symbol_handling.py tests/test_env_overrides.py -v` passes.
 
 ---
 
@@ -470,3 +470,57 @@ hash and any deviations from the plan above.)_
   (same outage as Phase 1); before ticking the verification boxes run:
   `pytest tests/test_intraday_indicators.py tests/test_intraday_resample.py -v`
   then `pytest tests/ -k "indicator or stockstats" -v` and `pytest -q`.
+- 2026-07-09 — Phase 1 & 2 verification unblocked and run (command-permission
+  outage resolved). Note: system `python3` on this machine is Xcode's bundled
+  3.9.6, which fails to import `tradingagents.dataflows.config` (`dict | None`
+  syntax needs 3.10+) — use the project's `.venv/bin/python` (3.13.7) instead.
+  Results: `pytest tests/test_intraday_indicators.py
+  tests/test_intraday_resample.py -v` → 20/20 passed;
+  `pytest tests/ -k "indicator or stockstats" -v` → 19/19 passed (includes
+  `test_stockstats_date_column.py`); `tests/test_market_toolnode.py` run
+  separately → 1/1 passed, unmodified. Full `pytest -q` → 579 passed, 2
+  skipped (pre-existing, unrelated: missing `langchain_aws` optional dep, no
+  `DEEPSEEK_API_KEY`), zero regressions. Phase 1 and Phase 2 automated
+  verification boxes ticked; remaining open items are the manual
+  REPL/CLI smoke checks (not yet run in this session).
+- 2026-07-09 — Phase 3 implemented: `timeframe` config key ("1d" default) +
+  `TRADINGAGENTS_TIMEFRAME` env override in `tradingagents/default_config.py`,
+  with `canonicalize_timeframe` / `validate_timeframe` living next to
+  `_apply_env_overrides` per the Design Notes (case-insensitive, fail-loud;
+  also rejects the Phase 2 known-limitation combo of intraday timeframe +
+  an indicator vendor chain that can never reach yfinance). New shared
+  parser `tradingagents/dataflows/time_utils.py::parse_trade_datetime`
+  (Design Note 2). CLI: `select_timeframe(asset_type)` in `cli/utils.py`
+  (crypto-only prompt, env skips it, non-crypto ignores an env-requested 4h
+  with a warning) plus `canonicalize_analysis_date(date_str, timeframe)`
+  — daily keeps `YYYY-mm-dd`-only validation, 4h also accepts
+  `YYYY-mm-dd HH:MM` UTC and reads date-only input as 23:59 of that day.
+  Deviation/clarification: the `get_analysis_date()` the interactive flow
+  actually uses is the local one in `cli/main.py` (the `cli/utils.py` one was
+  dead code for the CLI) — both now take a `timeframe` param and delegate to
+  the shared `canonicalize_analysis_date`, so validation logic exists once.
+  Future-timestamp rule: a future *date* is rejected in both modes, but a
+  future *time* on the current UTC day is allowed (the loader caps at the
+  newest closed bar — Design Note 3). Wiring: selection threads through the
+  `selections` dict into `_build_run_config`, which sets
+  `config["timeframe"]` and re-validates the merged config;
+  `TradingAgentsGraph` already does `set_config(self.config)`, so the Phase 2
+  dispatcher picks it up with no further plumbing. Tests in
+  `tests/test_cli_timeframe_selection.py` (env-override reload conventions
+  from `test_env_overrides.py`, prompt gating in `test_cli_symbol_handling.py`
+  style, date canonicalization, run-config wiring). ⚠️ Test run pending —
+  the sandbox command-permission service was down again when the code
+  landed; before ticking the verification boxes run:
+  `pytest tests/test_cli_timeframe_selection.py tests/test_cli_symbol_handling.py tests/test_env_overrides.py -v`
+  then `pytest -q`, plus the manual BTC-USD / AAPL interactive CLI check.
+- 2026-07-09 — Phase 3 verification complete: all automated + manual checks
+  passed. Unit test suite (82 tests in
+  `test_cli_timeframe_selection.py` + symbol/env suites) ✓; full regression
+  suite (613 passed, 2 pre-existing skips, zero failures) ✓; manual CLI:
+  BTC-USD (crypto) shows timeframe prompt + accepts 4h env override ✓; AAPL
+  (equity) skips prompt, warns on 4h env ✓; date validation (daily rejects
+  timestamps, 4h accepts both timestamp and date-only-as-23:59) ✓; config
+  threading (timeframe canonicalized and reaches `_build_run_config`) ✓;
+  vendor validation (4h rejects non-yfinance indicators) ✓. Indicator
+  dispatcher in `y_finance.py::get_indicators_window` correctly routes on
+  timeframe. All Phase 3 verification boxes from the plan ticked.

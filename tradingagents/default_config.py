@@ -16,6 +16,7 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_MAX_DEBATE_ROUNDS":    "max_debate_rounds",
     "TRADINGAGENTS_MAX_RISK_ROUNDS":      "max_risk_discuss_rounds",
     "TRADINGAGENTS_CHECKPOINT_ENABLED":   "checkpoint_enabled",
+    "TRADINGAGENTS_TIMEFRAME":            "timeframe",
     "TRADINGAGENTS_BENCHMARK_TICKER":     "benchmark_ticker",
     "TRADINGAGENTS_TEMPERATURE":          "temperature",
     "TRADINGAGENTS_LLM_MAX_RETRIES":      "llm_max_retries",
@@ -55,6 +56,52 @@ def _coerce(value: str, reference):
     return value
 
 
+_VALID_TIMEFRAMES = ("1d", "4h")
+
+
+def canonicalize_timeframe(value) -> str:
+    """Canonicalize a timeframe value to its lowercase form, or raise.
+
+    Only ``"1d"`` (daily, the default) and ``"4h"`` (crypto day-trading) are
+    supported. Comparison is case/whitespace-insensitive, but anything else
+    raises ``ValueError`` — a typo like ``"4H "`` must not silently run in
+    daily mode (same fail-loud philosophy as ``_coerce``).
+    """
+    normalized = str(value).strip().lower()
+    if normalized not in _VALID_TIMEFRAMES:
+        raise ValueError(
+            f"Invalid timeframe {value!r} (set via config or "
+            f"TRADINGAGENTS_TIMEFRAME): expected one of "
+            f"{', '.join(_VALID_TIMEFRAMES)}"
+        )
+    return normalized
+
+
+def validate_timeframe(config: dict) -> dict:
+    """Validate and canonicalize ``config["timeframe"]`` in place.
+
+    Intraday indicators are only implemented for the yfinance vendor, so a
+    non-daily timeframe whose indicator vendor chain can never reach yfinance
+    is rejected too — otherwise ``get_indicators`` would silently compute
+    daily indicators on an intraday run.
+    """
+    config["timeframe"] = canonicalize_timeframe(config.get("timeframe", "1d"))
+    if config["timeframe"] != "1d":
+        vendor_chain = (
+            config.get("tool_vendors", {}).get("get_indicators")
+            or config.get("data_vendors", {}).get("technical_indicators", "")
+        )
+        vendors = {v.strip().lower() for v in str(vendor_chain).split(",")}
+        if not vendors & {"yfinance", "default"}:
+            raise ValueError(
+                f"timeframe={config['timeframe']!r} requires the yfinance "
+                f"vendor for technical indicators (intraday bars are "
+                f"yfinance-only), but the configured vendor chain is "
+                f"{vendor_chain!r}"
+            )
+    return config
+
+
 def _apply_env_overrides(config: dict) -> dict:
     """Apply TRADINGAGENTS_* env vars to the config dict in-place."""
     for env_var, key in _ENV_OVERRIDES.items():
@@ -65,7 +112,7 @@ def _apply_env_overrides(config: dict) -> dict:
             config[key] = _coerce(raw, config.get(key))
         except ValueError as exc:
             raise ValueError(f"Invalid value for {env_var}: {exc}") from exc
-    return config
+    return validate_timeframe(config)
 
 
 DEFAULT_CONFIG = _apply_env_overrides({
@@ -103,6 +150,11 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # Checkpoint/resume: when True, LangGraph saves state after each node
     # so a crashed run can resume from the last successful step.
     "checkpoint_enabled": False,
+    # Bar interval for the analysis: "1d" (default, today's EOD behavior) or
+    # "4h" (crypto day-trading mode, 60m yfinance bars resampled to 4H UTC
+    # candles). Validated by validate_timeframe — any other value fails
+    # loudly at startup.
+    "timeframe": "1d",
     # Output language for analyst reports and final decision
     # Internal agent debate stays in English for reasoning quality
     "output_language": "English",
