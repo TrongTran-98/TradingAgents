@@ -120,7 +120,7 @@ ticker up to a given timestamp, with no look-ahead.
 computable on the 4H frame from Phase 1, with a lookback expressed in bars
 (or hours), not calendar days.
 
-- [ ] Add an intraday counterpart to `_get_stock_stats_bulk` /
+- [x] Add an intraday counterpart to `_get_stock_stats_bulk` /
       `get_stock_stats_indicators_window` in
       [tradingagents/dataflows/y_finance.py](../../tradingagents/dataflows/y_finance.py)
       that:
@@ -131,7 +131,7 @@ computable on the 4H frame from Phase 1, with a lookback expressed in bars
         crypto bars) instead of `look_back_days`, or keep `look_back_days`
         and convert internally (`bars = look_back_days * 6` for a 24h
         crypto market) — pick one and document it in the docstring.
-- [ ] Route `get_indicators` (the `@tool` in
+- [x] Route `get_indicators` (the `@tool` in
       [tradingagents/agents/utils/technical_indicators_tools.py](../../tradingagents/agents/utils/technical_indicators_tools.py))
       to the intraday path when `config["timeframe"] != "1d"`, via
       `route_to_vendor` / the existing `tool_vendors`/`data_vendors`
@@ -445,3 +445,28 @@ hash and any deviations from the plan above.)_
   when the code landed; run `pytest tests/test_intraday_resample.py -v`
   (plus `pytest -q` for regressions) before ticking the remaining
   verification boxes.
+- 2026-07-08 — Phase 2 implemented: intraday indicator path in
+  `tradingagents/dataflows/y_finance.py` (`_get_intraday_stock_stats_bulk` +
+  `get_intraday_stock_stats_indicators_window`, keyed by full
+  `YYYY-mm-dd HH:MM` bar-open timestamps) and a `get_indicators_window`
+  dispatcher registered as the yfinance impl for `get_indicators` in
+  `interface.py`. Decisions within the plan's open choices: (a) kept the
+  tool's `look_back_days` contract, converting internally
+  (`bars = look_back_days * 24h/timeframe`, 6/day for 4h) — no tool-signature
+  or routing change needed; (b) the interval is **not** a vendor-key /
+  dispatch dimension: `route_to_vendor` never threads config into impls
+  (vendors read `get_config()` themselves), so the dispatcher reads
+  `config.get("timeframe", "1d")` — daily default behavior is byte-identical,
+  and the key works before Phase 3 adds it to `DEFAULT_CONFIG`; (c) the
+  shared indicator-description dict was hoisted to module-level
+  `_INDICATOR_PARAMS` (pure data move, both paths reuse it). Known
+  limitation for Phase 3: with `timeframe=4h` and vendor `alpha_vantage`,
+  indicators silently stay daily — config validation should reject that
+  combo. Tests in `tests/test_intraday_indicators.py` use
+  smoothing-agnostic hand-verified references (RSI=100/0 on monotonic
+  series, MACD=0 on constant, boll=20-SMA on a linear ramp — formulas
+  confirmed against the installed stockstats source). ⚠️ Test run still
+  pending — the command-permission service stayed down the whole session
+  (same outage as Phase 1); before ticking the verification boxes run:
+  `pytest tests/test_intraday_indicators.py tests/test_intraday_resample.py -v`
+  then `pytest tests/ -k "indicator or stockstats" -v` and `pytest -q`.
