@@ -8,7 +8,11 @@ from tradingagents.dataflows.market_data_validator import build_verified_market_
 @tool
 def get_verified_market_snapshot(
     symbol: Annotated[str, "ticker symbol of the company"],
-    curr_date: Annotated[str, "the current trading date, YYYY-mm-dd"],
+    curr_date: Annotated[
+        str,
+        "the current trading date, YYYY-mm-dd "
+        "(or 'YYYY-mm-dd HH:MM' UTC on intraday runs)",
+    ],
     look_back_days: Annotated[
         int, "number of recent trading rows to include for sanity-checking"
     ] = 30,

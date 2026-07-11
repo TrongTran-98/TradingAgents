@@ -15,6 +15,7 @@ from .stockstats_utils import (
     yf_retry,
 )
 from .symbol_utils import NoMarketDataError, normalize_symbol
+from .time_utils import TRADE_DATE_FORMAT, parse_trade_datetime
 
 # Supported stockstats indicators with usage descriptions appended to every
 # indicator report (shared by the daily and intraday paths).
@@ -145,6 +146,83 @@ def get_YFin_data_online(
     header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
 
     return header + csv_string
+
+
+def get_stock_data_window(
+    symbol: Annotated[str, "ticker symbol of the company"],
+    start_date: Annotated[str, "start date (YYYY-mm-dd) or timestamp (YYYY-mm-dd HH:MM)"],
+    end_date: Annotated[str, "end date (YYYY-mm-dd) or timestamp (YYYY-mm-dd HH:MM)"],
+):
+    """yfinance entry point for ``get_stock_data``: dispatch on the configured timeframe.
+
+    Same dispatch pattern as ``get_indicators_window``: daily mode
+    (``timeframe`` absent or ``"1d"``) is today's behavior, byte-identical —
+    including its strict ``YYYY-mm-dd``-only date validation. Any intraday
+    timeframe returns closed intraday candles instead.
+    """
+    timeframe = get_config().get("timeframe", "1d")
+    if timeframe == "1d":
+        return get_YFin_data_online(symbol, start_date, end_date)
+    return get_intraday_YFin_data(symbol, start_date, end_date, timeframe)
+
+
+def _parse_intraday_range_end(end_date: str) -> datetime:
+    """Parse the intraday range end, reading a date-only value as 23:59.
+
+    Mirrors the CLI's Design Note 2 convention ("analyze July 8" means the
+    last closed 4H bar of that day): a bare ``YYYY-mm-dd`` end would otherwise
+    parse to midnight and exclude every bar of the requested day.
+    """
+    text = str(end_date).strip()
+    try:
+        return datetime.strptime(text, TRADE_DATE_FORMAT).replace(hour=23, minute=59)
+    except ValueError:
+        return parse_trade_datetime(text)
+
+
+def get_intraday_YFin_data(
+    symbol: Annotated[str, "ticker symbol of the company"],
+    start_date: Annotated[str, "start date (YYYY-mm-dd) or timestamp (YYYY-mm-dd HH:MM)"],
+    end_date: Annotated[str, "end date (YYYY-mm-dd) or timestamp (YYYY-mm-dd HH:MM)"],
+    timeframe: Annotated[str, "intraday bar interval, e.g. '4h'"] = "4h",
+):
+    """Intraday counterpart of ``get_YFin_data_online``: closed candles as CSV.
+
+    ``end_date`` is the look-ahead cutoff: only bars fully closed at or before
+    it are returned (enforced by ``load_intraday_ohlcv``, wall-clock capped).
+    Rows are labeled by bar *open* time in UTC.
+    """
+    start_dt = pd.Timestamp(parse_trade_datetime(start_date))
+    end_dt = _parse_intraday_range_end(end_date)
+
+    canonical = normalize_symbol(symbol)
+    # Closed-bar + look-ahead filtering and the staleness guard all live in
+    # the Phase 1 loader; this wrapper only applies the start cut and formats.
+    data = load_intraday_ohlcv(symbol, end_dt, timeframe)
+    data = data[data["Date"] >= start_dt].reset_index(drop=True)
+    if data.empty:
+        raise NoMarketDataError(
+            symbol,
+            canonical,
+            f"no closed {timeframe} bars between {start_date} and {end_date}",
+        )
+
+    data = data.copy()
+    data["Date"] = data["Date"].dt.strftime("%Y-%m-%d %H:%M")
+    for col in ("Open", "High", "Low", "Close"):
+        if col in data.columns:
+            data[col] = data[col].round(2)
+
+    label = canonical if canonical == symbol.upper() else f"{canonical} (from {symbol})"
+    header = (
+        f"# {timeframe} bar data for {label} from {start_date} to {end_date} "
+        f"(UTC, rows labeled by bar open time; only fully closed bars)\n"
+    )
+    header += f"# Total records: {len(data)}\n"
+    header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+
+    return header + data.to_csv(index=False)
+
 
 def get_stock_stats_indicators_window(
     symbol: Annotated[str, "ticker symbol of the company"],

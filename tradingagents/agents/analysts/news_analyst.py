@@ -8,11 +8,15 @@ from tradingagents.agents.utils.agent_utils import (
     get_news,
     get_prediction_markets,
 )
+from tradingagents.dataflows.time_utils import trade_date_only
 
 
 def create_news_analyst(llm):
     def news_analyst_node(state):
-        current_date = state["trade_date"]
+        # News is day-granular: keep the prompt date to YYYY-mm-dd even on an
+        # intraday run, so the LLM never feeds timestamps to the news/macro
+        # tools (their vendors parse dates with strict "%Y-%m-%d").
+        current_date = trade_date_only(state["trade_date"])
         asset_type = state.get("asset_type", "stock")
         asset_label = "company" if asset_type == "stock" else "asset"
         instrument_context = get_instrument_context_from_state(state)

@@ -193,25 +193,25 @@ set it non-interactively, and it reaches the graph as config.
 timestamp when in 4H mode, without breaking the daily path or any node that
 assumes a bare date.
 
-- [ ] Audit every read of `state["trade_date"]` (start with
+- [x] Audit every read of `state["trade_date"]` (start with
       [tradingagents/agents/analysts/market_analyst.py](../../tradingagents/agents/analysts/market_analyst.py),
       then grep the rest of `tradingagents/agents/**` and
       `tradingagents/graph/**`) and confirm each either (a) only needs the
       date portion (safe to `str.split(" ")[0]` at the call site) or (b)
       needs updating to timestamp-aware formatting.
-- [ ] Check [tradingagents/graph/propagation.py](../../tradingagents/graph/propagation.py)
+- [x] Check [tradingagents/graph/propagation.py](../../tradingagents/graph/propagation.py)
       and [tradingagents/graph/checkpointer.py](../../tradingagents/graph/checkpointer.py)
       for any date-based checkpoint keys or `strptime("%Y-%m-%d")` calls
       that would raise on a timestamp string — this is the most likely
       silent-breakage point.
-- [ ] Update `get_stock_data`/`get_indicators` tool wrappers in
+- [x] Update `get_stock_data`/`get_indicators` tool wrappers in
       [tradingagents/agents/utils/agent_utils.py](../../tradingagents/agents/utils/agent_utils.py)
       to route to the Phase 1/2 intraday functions when
       `state.get("timeframe") == "4h"`.
 
 **Verification**:
-- [ ] `pytest tests/test_checkpoint_resume.py tests/test_date_boundaries.py tests/test_analyst_execution.py -v` passes unmodified (daily path unaffected).
-- [ ] New integration-style test: build a minimal state dict with
+- [x] `pytest tests/test_checkpoint_resume.py tests/test_date_boundaries.py tests/test_analyst_execution.py -v` passes unmodified (daily path unaffected).
+- [x] New integration-style test: build a minimal state dict with
       `trade_date="2026-07-08 12:00"`, `timeframe="4h"`, call the market
       analyst node function directly (mocking the LLM per
       [tests/test_market_toolnode.py](../../tests/test_market_toolnode.py)
@@ -524,3 +524,64 @@ hash and any deviations from the plan above.)_
   vendor validation (4h rejects non-yfinance indicators) ✓. Indicator
   dispatcher in `y_finance.py::get_indicators_window` correctly routes on
   timeframe. All Phase 3 verification boxes from the plan ticked.
+- 2026-07-09 — Phase 4 implemented. Audit outcome for every
+  `state["trade_date"]` read: **market analyst keeps the full timestamp**
+  (its tools all accept it, see below); **news / fundamentals / sentiment
+  analysts truncate to the date portion** via a new validated helper
+  `time_utils.trade_date_only()` (their vendors — `yfinance_news`, `fred`,
+  statement filters — parse with strict `strptime("%Y-%m-%d")`, and news is
+  day-granular by design); `create_msg_delete` (prose) and
+  `propagation.create_initial_state` / `checkpointer.thread_id` (opaque
+  strings, hashed raw) are timestamp-safe as-is. Changes beyond the audit:
+  (a) `AgentState`/`create_initial_state` gained a `timeframe` field
+  (default `"1d"`, threaded from config by `_run_graph`), and
+  `_run_signature` now folds the timeframe into the checkpoint signature so
+  a 4H resume can never continue a daily checkpoint (invalidates any
+  in-flight pre-upgrade checkpoints — acceptable, they're crash-resume
+  artifacts); (b) `_log_state` sanitizes the filename via new
+  `time_utils.filesystem_datetime_tag` (`12:00` → `12-00`; daily filenames
+  byte-identical) and logs the timeframe; (c) **deviation from the plan
+  bullet**: routing keys off `config["timeframe"]`, not
+  `state.get("timeframe")` — `@tool` functions run inside `ToolNode` and
+  only ever see LLM-provided args, never graph state, so the Phase 2
+  config-dispatch pattern was extended instead: new
+  `y_finance.get_stock_data_window` dispatcher (registered as the yfinance
+  impl for `get_stock_data`) routes to new `get_intraday_YFin_data`
+  (closed-4H-candle CSV via the Phase 1 loader; date-only range end reads
+  as 23:59 per Design Note 2), and `validate_timeframe` now also rejects
+  intraday + a `core_stock_apis` vendor chain that can't reach yfinance;
+  (d) beyond the plan bullets, `build_verified_market_snapshot` (which the
+  market analyst's prompt *requires* it to call) is timeframe-aware —
+  otherwise it would have verified 4H claims against daily rows and flagged
+  every exact number as a discrepancy; (e) `_resolve_pending_entries` skips
+  timestamp-dated memory entries with a debug log (4H outcome scoring is
+  Phase 6; without the guard the daily resolver would warn-and-retry them
+  every run); market-tool arg descriptions widened to mention the intraday
+  timestamp format. Tests in `tests/test_graph_timeframe_propagation.py`
+  (state/signature propagation, log filename, stock-data routing +
+  intraday CSV shape, snapshot dispatch, per-analyst prompt date handling
+  with a recording fake LLM, and the plan's integration check that the
+  market analyst's tool set accepts a `YYYY-mm-dd HH:MM` date end-to-end).
+  ⚠️ Test run pending — the sandbox command-permission service was down
+  again when the code landed (same outage as Phases 1–3); before ticking
+  the verification boxes run:
+  `pytest tests/test_graph_timeframe_propagation.py -v` then
+  `pytest tests/test_checkpoint_resume.py tests/test_date_boundaries.py tests/test_analyst_execution.py -v`
+  (must pass unmodified) and `pytest -q`.
+- 2026-07-09 — Phase 4 verification complete (run via the allowlisted
+  `pytest -q` — the command-permission outage persisted, so the per-file
+  `-v` invocations above were covered by two full-suite runs instead). First
+  run: 632 passed, 3 failed — all three in
+  `test_cli_timeframe_selection.py::test_4h_allows_vendor_chain_reaching_yfinance`,
+  a false positive introduced by extending `validate_timeframe` to
+  `core_stock_apis`: a config with no `core_stock_apis` entry defaulted to
+  `""` and was rejected, though `route_to_vendor`/`get_vendor` treat a
+  missing or empty chain as `"default"` (all vendors — yfinance reachable).
+  Fixed by defaulting missing/empty chains to `"default"` in
+  `validate_timeframe`, mirroring routing semantics. Second run: **635
+  passed, 2 pre-existing skips (`langchain_aws` optional dep,
+  `DEEPSEEK_API_KEY`), zero failures** — includes all 22 new tests in
+  `tests/test_graph_timeframe_propagation.py` and the plan's regression set
+  (`test_checkpoint_resume.py`, `test_date_boundaries.py`,
+  `test_analyst_execution.py`, none modified). Both Phase 4 verification
+  boxes ticked.

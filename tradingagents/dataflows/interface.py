@@ -26,7 +26,7 @@ from .y_finance import (
     get_income_statement as get_yfinance_income_statement,
     get_indicators_window as get_yfinance_indicators_window,
     get_insider_transactions as get_yfinance_insider_transactions,
-    get_YFin_data_online,
+    get_stock_data_window as get_yfinance_stock_data_window,
 )
 from .yfinance_news import get_global_news_yfinance, get_news_yfinance
 
@@ -96,7 +96,9 @@ VENDOR_METHODS = {
     # core_stock_apis
     "get_stock_data": {
         "alpha_vantage": get_alpha_vantage_stock,
-        "yfinance": get_YFin_data_online,
+        # Dispatches internally on config["timeframe"]: daily OHLCV by
+        # default, closed intraday (resampled 4H) candles when timeframe != "1d".
+        "yfinance": get_yfinance_stock_data_window,
     },
     # technical_indicators
     "get_indicators": {

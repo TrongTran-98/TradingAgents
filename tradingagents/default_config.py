@@ -77,28 +77,41 @@ def canonicalize_timeframe(value) -> str:
     return normalized
 
 
+# Tools with an intraday code path, and the category their vendor chain is
+# configured under. Intraday bars are yfinance-only, so a non-daily timeframe
+# with a vendor chain that can never reach yfinance for these must be rejected
+# — otherwise the tool would silently serve daily data on an intraday run.
+_INTRADAY_TOOL_CATEGORIES = (
+    ("get_stock_data", "core_stock_apis"),
+    ("get_indicators", "technical_indicators"),
+)
+
+
 def validate_timeframe(config: dict) -> dict:
     """Validate and canonicalize ``config["timeframe"]`` in place.
 
-    Intraday indicators are only implemented for the yfinance vendor, so a
-    non-daily timeframe whose indicator vendor chain can never reach yfinance
-    is rejected too — otherwise ``get_indicators`` would silently compute
-    daily indicators on an intraday run.
+    Intraday market data (prices and indicators) is only implemented for the
+    yfinance vendor, so a non-daily timeframe whose vendor chain can never
+    reach yfinance for those tools is rejected too.
     """
     config["timeframe"] = canonicalize_timeframe(config.get("timeframe", "1d"))
     if config["timeframe"] != "1d":
-        vendor_chain = (
-            config.get("tool_vendors", {}).get("get_indicators")
-            or config.get("data_vendors", {}).get("technical_indicators", "")
-        )
-        vendors = {v.strip().lower() for v in str(vendor_chain).split(",")}
-        if not vendors & {"yfinance", "default"}:
-            raise ValueError(
-                f"timeframe={config['timeframe']!r} requires the yfinance "
-                f"vendor for technical indicators (intraday bars are "
-                f"yfinance-only), but the configured vendor chain is "
-                f"{vendor_chain!r}"
+        for tool, category in _INTRADAY_TOOL_CATEGORIES:
+            # Missing/empty chains mean "default" (all vendors) in
+            # route_to_vendor, so yfinance is reachable — mirror that here
+            # rather than rejecting configs that never set the category.
+            vendor_chain = (
+                config.get("tool_vendors", {}).get(tool)
+                or config.get("data_vendors", {}).get(category)
+                or "default"
             )
+            vendors = {v.strip().lower() for v in str(vendor_chain).split(",")}
+            if not vendors & {"yfinance", "default"}:
+                raise ValueError(
+                    f"timeframe={config['timeframe']!r} requires the yfinance "
+                    f"vendor for {tool} (intraday bars are yfinance-only), "
+                    f"but the configured vendor chain is {vendor_chain!r}"
+                )
     return config
 
 

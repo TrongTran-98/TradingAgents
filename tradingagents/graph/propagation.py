@@ -22,6 +22,7 @@ class Propagator:
         asset_type: str = "stock",
         past_context: str = "",
         instrument_context: str = "",
+        timeframe: str = "1d",
     ) -> dict[str, Any]:
         """Create the initial state for the agent graph.
 
@@ -30,6 +31,9 @@ class Propagator:
         ``TradingAgentsGraph.resolve_instrument_context``). When empty, agents
         fall back to ticker-only context via
         ``get_instrument_context_from_state``.
+
+        ``trade_date`` stays a string end-to-end: ``YYYY-mm-dd`` in daily
+        mode, ``YYYY-mm-dd HH:MM`` (UTC) when ``timeframe`` is intraday.
         """
         return {
             "messages": [("human", company_name)],
@@ -37,6 +41,7 @@ class Propagator:
             "asset_type": asset_type,
             "instrument_context": instrument_context,
             "trade_date": str(trade_date),
+            "timeframe": str(timeframe),
             "past_context": past_context,
             "investment_debate_state": InvestDebateState(
                 {

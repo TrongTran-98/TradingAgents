@@ -41,6 +41,7 @@ from tradingagents.agents.utils.structured import (
 )
 from tradingagents.dataflows.reddit import fetch_reddit_posts
 from tradingagents.dataflows.stocktwits import fetch_stocktwits_messages
+from tradingagents.dataflows.time_utils import trade_date_only
 
 
 def _seven_days_back(trade_date: str) -> str:
@@ -59,7 +60,10 @@ def create_sentiment_analyst(llm):
 
     def sentiment_analyst_node(state):
         ticker = state["company_of_interest"]
-        end_date = state["trade_date"]
+        # Sentiment is day-granular by design: an intraday trade date
+        # ("YYYY-mm-dd HH:MM") is truncated to its date so the 7-day news
+        # window and the vendors' strict date parsing keep working.
+        end_date = trade_date_only(state["trade_date"])
         start_date = _seven_days_back(end_date)
         instrument_context = get_instrument_context_from_state(state)
 

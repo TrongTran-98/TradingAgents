@@ -15,6 +15,8 @@ from collections.abc import Iterable
 import pandas as pd
 from stockstats import wrap
 
+from tradingagents.dataflows.config import get_config
+from tradingagents.dataflows.intraday import load_intraday_ohlcv
 from tradingagents.dataflows.stockstats_utils import load_ohlcv
 
 # A fixed, common indicator set so the snapshot is the same shape every run.
@@ -25,14 +27,18 @@ DEFAULT_SNAPSHOT_INDICATORS: tuple[str, ...] = (
 )
 
 
-def _verified_rows(symbol: str, curr_date: str) -> pd.DataFrame:
+def _verified_rows(symbol: str, curr_date: str, timeframe: str = "1d") -> pd.DataFrame:
     """OHLCV on or before curr_date, date-sorted. Raises if nothing usable.
 
-    ``load_ohlcv`` already normalizes the Date column and filters out
-    look-ahead rows, but we re-apply the cutoff defensively — this is a
-    verification path, so it must not trust its input to be pre-filtered.
+    The loaders already normalize the Date column and filter out look-ahead
+    rows (the intraday one also drops the still-forming bar), but we re-apply
+    the cutoff defensively — this is a verification path, so it must not
+    trust its input to be pre-filtered.
     """
-    data = load_ohlcv(symbol, curr_date)
+    if timeframe == "1d":
+        data = load_ohlcv(symbol, curr_date)
+    else:
+        data = load_intraday_ohlcv(symbol, curr_date, timeframe)
     if data is None or data.empty:
         raise ValueError(f"No OHLCV data available for {symbol}.")
 
@@ -45,11 +51,11 @@ def _verified_rows(symbol: str, curr_date: str) -> pd.DataFrame:
     return df
 
 
-def _fmt(value) -> str:
+def _fmt(value, date_fmt: str = "%Y-%m-%d") -> str:
     if value is None or pd.isna(value):
         return "N/A"
     if isinstance(value, pd.Timestamp):
-        return value.strftime("%Y-%m-%d")
+        return value.strftime(date_fmt)
     if isinstance(value, bool):
         return str(value)
     if isinstance(value, (int,)):
@@ -66,10 +72,16 @@ def build_verified_market_snapshot(
     indicators: Iterable[str] | None = None,
 ) -> str:
     """Render a ground-truth snapshot: latest OHLCV row, indicators, recent closes."""
+    # In intraday mode the snapshot must verify against the same closed 4H
+    # bars the other market tools serve — a daily row would contradict every
+    # exact intraday claim the analyst is told to check against it.
+    timeframe = get_config().get("timeframe", "1d")
+    date_fmt = "%Y-%m-%d" if timeframe == "1d" else "%Y-%m-%d %H:%M"
+
     # `df` keeps the original capitalized OHLCV columns (Open/High/Low/Close/
     # Volume); stockstats `wrap()` lowercases columns and adds indicator
     # columns, so read raw prices from `df` and indicators from `stock_df`.
-    df = _verified_rows(symbol, curr_date)
+    df = _verified_rows(symbol, curr_date, timeframe)
     stock_df = wrap(df.copy())
 
     selected = tuple(indicators or DEFAULT_SNAPSHOT_INDICATORS)
@@ -82,7 +94,7 @@ def build_verified_market_snapshot(
             indicator_values[name] = f"N/A ({type(exc).__name__})"
 
     latest = df.iloc[-1]
-    latest_date = _fmt(latest["Date"])
+    latest_date = _fmt(latest["Date"], date_fmt)
     window = max(1, min(int(look_back_days), 30))
     recent = df.tail(window)
 
@@ -92,6 +104,13 @@ def build_verified_market_snapshot(
         f"- Requested analysis date: {curr_date}",
         f"- Latest trading row used: {latest_date}",
         "- Rows after the requested analysis date are excluded before verification.",
+    ]
+    if timeframe != "1d":
+        lines.append(
+            f"- Rows are {timeframe} bars (UTC), labeled by bar open time; "
+            f"only fully closed bars are used."
+        )
+    lines += [
         "",
         "### Latest verified OHLCV row",
         "",
@@ -109,7 +128,7 @@ def build_verified_market_snapshot(
     lines += ["", f"### Recent verified closes (last {len(recent)} rows)", "",
               "| Date | Close |", "|---|---:|"]
     for _, row in recent.iterrows():
-        lines.append(f"| {_fmt(row['Date'])} | {_fmt(row.get('Close'))} |")
+        lines.append(f"| {_fmt(row['Date'], date_fmt)} | {_fmt(row.get('Close'))} |")
 
     lines += [
         "",

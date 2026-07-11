@@ -9,7 +9,11 @@ from tradingagents.dataflows.interface import route_to_vendor
 def get_indicators(
     symbol: Annotated[str, "ticker symbol of the company"],
     indicator: Annotated[str, "technical indicator to get the analysis and report of"],
-    curr_date: Annotated[str, "The current trading date you are trading on, YYYY-mm-dd"],
+    curr_date: Annotated[
+        str,
+        "The current trading date you are trading on, YYYY-mm-dd "
+        "(or 'YYYY-mm-dd HH:MM' UTC on intraday runs)",
+    ],
     look_back_days: Annotated[int, "how many days to look back"] = 30,
 ) -> str:
     """

@@ -8,11 +8,15 @@ from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
 )
+from tradingagents.dataflows.time_utils import trade_date_only
 
 
 def create_fundamentals_analyst(llm):
     def fundamentals_analyst_node(state):
-        current_date = state["trade_date"]
+        # Fundamentals are day-granular (financial statements, filings): keep
+        # the prompt date to YYYY-mm-dd even on an intraday run so the LLM
+        # never feeds timestamps to the statement tools' date filters.
+        current_date = trade_date_only(state["trade_date"])
         instrument_context = get_instrument_context_from_state(state)
 
         tools = [

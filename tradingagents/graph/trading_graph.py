@@ -29,6 +29,7 @@ from tradingagents.agents.utils.agent_utils import (
 )
 from tradingagents.agents.utils.memory import TradingMemoryLog
 from tradingagents.dataflows.config import set_config
+from tradingagents.dataflows.time_utils import filesystem_datetime_tag
 from tradingagents.dataflows.utils import safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.llm_clients import create_llm_client
@@ -310,6 +311,16 @@ class TradingAgentsGraph:
         benchmark = self._resolve_benchmark(ticker)
         updates = []
         for entry in pending:
+            # Intraday entries carry a "YYYY-mm-dd HH:MM" date and are scored
+            # against the next 4H bar's close, not next-day daily returns —
+            # that resolver lands in Phase 6 of the 4H plan. Skip them here so
+            # the daily resolver doesn't warn-and-retry them on every run.
+            if " " in entry["date"]:
+                logger.debug(
+                    "Skipping intraday entry %s %s: 4H outcome resolution not implemented yet",
+                    ticker, entry["date"],
+                )
+                continue
             raw, alpha, days = self._fetch_returns(
                 ticker, entry["date"], benchmark=benchmark,
             )
@@ -357,6 +368,9 @@ class TradingAgentsGraph:
             f"debate={self.config['max_debate_rounds']}",
             f"risk={self.config['max_risk_discuss_rounds']}",
             f"asset={asset_type}",
+            # Timeframe switches the whole data path (daily vs intraday bars),
+            # so a resume must never mix checkpoints across timeframes.
+            f"timeframe={self.config.get('timeframe', '1d')}",
         ])
 
     def propagate(self, company_name, trade_date, asset_type: str = "stock"):
@@ -428,6 +442,7 @@ class TradingAgentsGraph:
             asset_type=asset_type,
             past_context=past_context,
             instrument_context=instrument_context,
+            timeframe=self.config.get("timeframe", "1d"),
         )
         args = self.propagator.get_graph_args()
 
@@ -486,6 +501,7 @@ class TradingAgentsGraph:
         self.log_states_dict[str(trade_date)] = {
             "company_of_interest": final_state["company_of_interest"],
             "trade_date": final_state["trade_date"],
+            "timeframe": final_state.get("timeframe", "1d"),
             "market_report": final_state["market_report"],
             "sentiment_report": final_state["sentiment_report"],
             "news_report": final_state["news_report"],
@@ -519,7 +535,9 @@ class TradingAgentsGraph:
         directory = Path(self.config["results_dir"]) / safe_ticker / "TradingAgentsStrategy_logs"
         directory.mkdir(parents=True, exist_ok=True)
 
-        log_path = directory / f"full_states_log_{trade_date}.json"
+        # Intraday trade dates carry "HH:MM"; sanitize so the filename has no
+        # space/colon (daily-mode filenames are unchanged by this).
+        log_path = directory / f"full_states_log_{filesystem_datetime_tag(str(trade_date))}.json"
         with open(log_path, "w", encoding="utf-8") as f:
             json.dump(self.log_states_dict[str(trade_date)], f, indent=4)
 
