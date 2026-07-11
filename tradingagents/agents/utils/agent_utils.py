@@ -43,6 +43,7 @@ __all__ = [
     "resolve_instrument_identity",
     "get_instrument_context_from_state",
     "get_language_instruction",
+    "get_timeframe_context_from_state",
     "create_msg_delete",
 ]
 
@@ -63,6 +64,34 @@ def get_language_instruction() -> str:
     if lang.strip().lower() == "english":
         return ""
     return f" Write your entire response in {lang}."
+
+
+def get_timeframe_context_from_state(state: Mapping[str, Any]) -> str:
+    """Return day-trading framing for the decision-side prompts.
+
+    Applied to the trader, the risk-debate analysts, and the portfolio
+    manager so an intraday (4H) run reasons in a holding horizon of hours
+    with 4H-ATR-scaled stops, and weighs the day-granular news/sentiment
+    reports as background context rather than fresh catalysts.
+
+    Returns "" in daily mode (``timeframe`` absent or ``"1d"``) so daily
+    prompts stay byte-identical to before the 4H day-trading feature.
+    """
+    if state.get("timeframe", "1d") == "1d":
+        return ""
+    return (
+        " Day-trading context (4H bars): this decision is made at the close of"
+        " a specific 4-hour bar, not a daily close — it is a day trade, not a"
+        " multi-day swing or buy-and-hold position. The intended holding"
+        " horizon is hours (typically one to a few 4H bars); state that"
+        " horizon explicitly in the final decision. Size the stop-loss and"
+        " profit target as multiples of the 4H-bar ATR from the market report"
+        " — a 4H ATR is far smaller than a daily ATR, so stops must be"
+        " correspondingly tighter than daily-bar stops. The news and sentiment"
+        " reports are day-granular, lower-frequency than this trading"
+        " timeframe: treat them as background regime context and do not"
+        " overweight headlines that predate the current bar."
+    )
 
 
 def _clean_identity_value(value: Any) -> str | None:

@@ -21,6 +21,28 @@ def create_market_analyst(llm):
             get_verified_market_snapshot,
         ]
 
+        # Phase 5 of the 4H day-trading plan: in intraday mode, reframe the
+        # analysis around the 4H bar. Empty in daily mode so the daily prompt
+        # stays byte-identical.
+        timeframe_note = ""
+        if state.get("timeframe", "1d") != "1d":
+            timeframe_note = (
+                "\n\nDay-trading mode (4H bars): this analysis runs on 4-hour"
+                " bars, not daily bars. Today's date above is an intraday UTC"
+                " timestamp — 'now' for this run — and all tool data ends at"
+                " the most recent *closed* 4H bar at or before it (rows are"
+                " labeled by bar open time), so you are analyzing a specific"
+                " 4H bar close, not a daily close. Indicator periods count 4H"
+                " bars, not days: close_200_sma spans roughly 33 calendar days"
+                " of a 24/7 market, so treat 50/200 SMA structure as background"
+                " regime context only, never as the primary signal. Favor"
+                " fast, responsive indicators suited to a holding horizon of"
+                " hours — close_10_ema for short-term momentum shifts, rsi,"
+                " macd/macds/macdh for momentum turns, and atr for sizing"
+                " tight intraday stops — and frame trend, support/resistance,"
+                " and volatility calls at the 4H scale."
+            )
+
         system_message = (
             """You are a trading assistant tasked with analyzing financial markets. Your role is to select the **most relevant indicators** for a given market condition or trading strategy from the following list. The goal is to choose up to **8 indicators** that provide complementary insights without redundancy. Categories and each category's indicators are:
 
@@ -51,6 +73,7 @@ Volume-Based Indicators:
 Before writing the final report, call get_verified_market_snapshot for this ticker and the current date, and treat it as the source of truth for any exact OHLCV, price-level, or indicator-value claim. If another tool's output conflicts with the verified snapshot, flag the discrepancy rather than inventing a reconciled number. Do not claim historical validation, support/resistance bounces, or exact percentage moves unless they are directly supported by tool output with concrete dates and prices.
 
 Write a very detailed and nuanced report of the trends you observe. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."""
+            + timeframe_note
             + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
             + get_language_instruction()
         )

@@ -1,6 +1,6 @@
 # Plan: 4H Day-Trading Mode
 
-Status: **Phase 0 complete**
+Status: **Phase 5 implemented** (manual read-through pending; Phases 6–7 remaining)
 Owner: unassigned
 Created: 2026-07-08
 
@@ -225,24 +225,24 @@ assumes a bare date.
 **Goal**: agent reasoning reflects a 4H holding-period mindset, not
 "buy-and-hold weeks" framing bleeding through from the daily prompts.
 
-- [ ] Add a day-trading prompt variant (or a conditional paragraph) to
+- [x] Add a day-trading prompt variant (or a conditional paragraph) to
       [tradingagents/agents/analysts/market_analyst.py](../../tradingagents/agents/analysts/market_analyst.py):
       mention the 4H bar, favor faster indicators (10 EMA, RSI, MACD, ATR
       for tight stops) over 200 SMA-style long-horizon framing, and be
       explicit that "today's date" is actually a specific 4H bar close.
-- [ ] Update [tradingagents/agents/trader/trader.py](../../tradingagents/agents/trader/trader.py)
+- [x] Update [tradingagents/agents/trader/trader.py](../../tradingagents/agents/trader/trader.py)
       and the risk-management debators in
       [tradingagents/agents/risk_mgmt/](../../tradingagents/agents/risk_mgmt/)
       to size stops/targets in ATR-multiples appropriate for a 4H bar
       (much tighter than a daily-bar ATR stop) and to state the intended
       holding horizon (hours, not weeks) in the final decision text.
-- [ ] Leave news/sentiment analysts' day-level lookback as-is for now
+- [x] Leave news/sentiment analysts' day-level lookback as-is for now
       (explicitly out of scope) — note in the report that news context is
       lower-frequency than the trading timeframe, so the trader agent
       doesn't overweight stale-feeling headlines.
 
 **Verification**:
-- [ ] Prompt-content unit test (pattern per
+- [x] Prompt-content unit test (pattern per
       [tests/test_news_analyst_prompt.py](../../tests/test_news_analyst_prompt.py)):
       assert the day-trading prompt variant contains the expected framing
       strings and the daily prompt is unchanged when `timeframe == "1d"`.
@@ -585,3 +585,33 @@ hash and any deviations from the plan above.)_
   (`test_checkpoint_resume.py`, `test_date_boundaries.py`,
   `test_analyst_execution.py`, none modified). Both Phase 4 verification
   boxes ticked.
+- 2026-07-11 — Phase 5 implemented: day-trading prompt framing, all keyed on
+  `state.get("timeframe", "1d")` so daily prompts stay **byte-identical**
+  (empty-string interpolation, verified by equality tests). Market analyst
+  gets an inline conditional paragraph ("Day-trading mode (4H bars)"):
+  today's date is an intraday UTC timestamp / analysis targets the last
+  *closed* 4H bar, indicator periods count bars not days (200 SMA ≈ 33
+  calendar days on a 24/7 market — background regime context only), favor
+  close_10_ema / rsi / macd / atr for tight intraday stops. Decision-side
+  agents share a new helper
+  `agent_utils.get_timeframe_context_from_state()` ("Day-trading context
+  (4H bars)"): holding horizon in hours stated explicitly in the final
+  decision, stops/targets as 4H-bar-ATR multiples (tighter than daily-bar
+  stops), and news/sentiment flagged as day-granular background context so
+  stale headlines aren't overweighted (covers the third plan bullet —
+  news/sentiment analysts themselves untouched). Deviation (+scope): the
+  helper is also wired into `managers/portfolio_manager.py` — the plan
+  bullet names only trader + risk debators, but the PM writes the actual
+  `final_trade_decision`, so without it the "state the horizon in the final
+  decision text" requirement couldn't be met. Verification: new
+  `tests/test_day_trading_prompts.py` (15 tests: helper contract, per-agent
+  4h framing presence via prompt capture — `_RecordingLLM` for the market
+  analyst, MagicMock structured/plain LLMs per `test_structured_agents.py`
+  — and per-agent daily-unchanged equality incl. missing-`timeframe` key).
+  Full `pytest -q` (allowlisted invocation; the command-permission outage
+  recurred this session): **650 passed, 2 pre-existing skips, zero
+  failures**. Remaining open item: the manual `debug=True` BTC-USD
+  read-through of market analyst + trader output (needs a live LLM run).
+  ⚠️ Changes left uncommitted — `git add` was blocked by the
+  command-permission outage for the whole session (only exact-allowlisted
+  commands ran); stage everything and commit as the Phase 5 commit.
