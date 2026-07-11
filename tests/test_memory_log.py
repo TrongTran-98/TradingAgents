@@ -1,5 +1,6 @@
 """Tests for TradingMemoryLog — storage, deferred reflection, PM injection, legacy removal."""
 
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -8,6 +9,7 @@ import pytest
 from tradingagents.agents.managers.portfolio_manager import create_portfolio_manager
 from tradingagents.agents.schemas import PortfolioDecision, PortfolioRating
 from tradingagents.agents.utils.memory import TradingMemoryLog
+from tradingagents.dataflows.time_utils import bar_close_timestamp, timeframe_delta
 from tradingagents.graph.propagation import Propagator
 from tradingagents.graph.reflection import Reflector
 from tradingagents.graph.trading_graph import TradingAgentsGraph
@@ -796,6 +798,330 @@ class TestPortfolioManagerInjection:
         assert "Correct call." in past_ctx
         assert "DECISION:" in past_ctx
         assert "REFLECTION:" in past_ctx
+
+
+# ---------------------------------------------------------------------------
+# Intraday (4H) entries: timeframe tagging, filtering, next-bar reflection
+# ---------------------------------------------------------------------------
+
+BAR_CLOSE = "2026-07-08 12:00"  # decision bar 08:00-12:00 UTC
+
+
+def _intraday_bars(opens, closes):
+    """Frame shaped like load_intraday_ohlcv output (Date = bar open labels)."""
+    return pd.DataFrame({"Date": pd.to_datetime(opens), "Close": closes})
+
+
+class TestIntradayEntries:
+
+    # store_decision / parsing
+
+    def test_store_intraday_writes_timeframe_field(self, tmp_path):
+        log = make_log(tmp_path)
+        log.store_decision("BTC-USD", BAR_CLOSE, DECISION_BUY, timeframe="4h")
+        text = (tmp_path / "trading_memory.md").read_text(encoding="utf-8")
+        assert f"[{BAR_CLOSE} | BTC-USD | Buy | pending]" in text
+        assert "Timeframe: 4h" in text
+        e = log.load_entries()[0]
+        assert e["date"] == BAR_CLOSE
+        assert e["timeframe"] == "4h"
+        assert e["decision"] == DECISION_BUY.strip()
+
+    def test_store_daily_body_has_no_timeframe_field(self, tmp_path):
+        """Daily entries stay field-free — on-disk format byte-identical to before."""
+        log = make_log(tmp_path)
+        log.store_decision("NVDA", "2026-01-10", DECISION_BUY)
+        text = (tmp_path / "trading_memory.md").read_text(encoding="utf-8")
+        assert "Timeframe:" not in text
+        assert "[2026-01-10 | NVDA | Buy | pending]\n\nDECISION:" in text
+        assert log.load_entries()[0]["timeframe"] == "1d"
+
+    def test_store_intraday_idempotent_per_bar_close(self, tmp_path):
+        """Two runs inside the same bar window map to one entry."""
+        log = make_log(tmp_path)
+        log.store_decision("BTC-USD", BAR_CLOSE, DECISION_BUY, timeframe="4h")
+        log.store_decision("BTC-USD", BAR_CLOSE, DECISION_BUY, timeframe="4h")
+        assert len(log.load_entries()) == 1
+
+    def test_intraday_and_daily_same_day_no_collision(self, tmp_path):
+        """A 4H entry never trips the daily idempotency guard for the same day."""
+        log = make_log(tmp_path)
+        log.store_decision("BTC-USD", BAR_CLOSE, DECISION_BUY, timeframe="4h")
+        log.store_decision("BTC-USD", "2026-07-08", DECISION_SELL)
+        entries = log.load_entries()
+        assert len(entries) == 2
+        assert {e["timeframe"] for e in entries} == {"4h", "1d"}
+
+    def test_legacy_timestamp_entry_defaults_to_4h(self, tmp_path):
+        """Timestamp-dated entries written before the Timeframe field existed
+        (Phase 4/5 era) still parse as intraday."""
+        entry = (
+            f"[{BAR_CLOSE} | BTC-USD | Buy | pending]\n\n"
+            f"DECISION:\n{DECISION_BUY}" + _SEP
+        )
+        (tmp_path / "trading_memory.md").write_text(entry, encoding="utf-8")
+        log = make_log(tmp_path)
+        assert log.load_entries()[0]["timeframe"] == "4h"
+
+    def test_timeframe_line_in_prose_does_not_mislabel(self, tmp_path):
+        """A 'Timeframe:' line inside the LLM decision text must not be parsed
+        as the entry's timeframe field."""
+        decision = "Rating: Buy\nTimeframe: multi-week swing setup."
+        log = make_log(tmp_path)
+        log.store_decision("NVDA", "2026-01-10", decision)
+        assert log.load_entries()[0]["timeframe"] == "1d"
+
+    # get_past_context timeframe filtering
+
+    def test_past_context_filters_out_intraday_for_daily_run(self, tmp_path):
+        log = make_log(tmp_path)
+        log.store_decision("BTC-USD", BAR_CLOSE, DECISION_BUY, timeframe="4h")
+        log.update_with_outcome("BTC-USD", BAR_CLOSE, 0.01, None, "4h", "Bar lesson.")
+        _seed_completed(tmp_path, "BTC-USD", "2026-07-01", "Buy the dip.", "Daily lesson.")
+        ctx = log.get_past_context("BTC-USD")  # daily run
+        assert "Daily lesson." in ctx
+        assert "Bar lesson." not in ctx
+
+    def test_past_context_filters_out_daily_for_intraday_run(self, tmp_path):
+        log = make_log(tmp_path)
+        log.store_decision("BTC-USD", BAR_CLOSE, DECISION_BUY, timeframe="4h")
+        log.update_with_outcome("BTC-USD", BAR_CLOSE, 0.01, None, "4h", "Bar lesson.")
+        _seed_completed(tmp_path, "BTC-USD", "2026-07-01", "Buy the dip.", "Daily lesson.")
+        ctx = log.get_past_context("BTC-USD", timeframe="4h")
+        assert "Bar lesson." in ctx
+        assert "Daily lesson." not in ctx
+
+    def test_past_context_cross_ticker_also_filtered(self, tmp_path):
+        log = make_log(tmp_path)
+        log.store_decision("ETH-USD", BAR_CLOSE, DECISION_BUY, timeframe="4h")
+        log.update_with_outcome("ETH-USD", BAR_CLOSE, 0.02, None, "4h", "ETH bar lesson.")
+        ctx_daily = log.get_past_context("BTC-USD")
+        ctx_4h = log.get_past_context("BTC-USD", timeframe="4h")
+        assert "ETH bar lesson." not in ctx_daily
+        assert "ETH bar lesson." in ctx_4h
+
+    # update path: alpha omitted, bar-duration holding
+
+    def test_update_intraday_tag_has_na_alpha_and_bar_holding(self, tmp_path):
+        log = make_log(tmp_path)
+        log.store_decision("BTC-USD", BAR_CLOSE, DECISION_BUY, timeframe="4h")
+        log.update_with_outcome("BTC-USD", BAR_CLOSE, 0.005, None, "4h", "Tight call.")
+        text = (tmp_path / "trading_memory.md").read_text(encoding="utf-8")
+        assert f"[{BAR_CLOSE} | BTC-USD | Buy | +0.5% | n/a | 4h]" in text
+        e = log.load_entries()[0]
+        assert e["pending"] is False
+        assert e["raw"] == "+0.5%"
+        assert e["alpha"] == "n/a"
+        assert e["holding"] == "4h"
+        assert e["timeframe"] == "4h", "Timeframe field must survive the update"
+        assert e["reflection"] == "Tight call."
+
+    def test_batch_update_intraday_and_daily_mixed(self, tmp_path):
+        log = make_log(tmp_path)
+        log.store_decision("BTC-USD", BAR_CLOSE, DECISION_BUY, timeframe="4h")
+        log.store_decision("BTC-USD", "2026-07-01", DECISION_SELL)
+        log.batch_update_with_outcomes([
+            {"ticker": "BTC-USD", "trade_date": BAR_CLOSE,
+             "raw_return": 0.012, "alpha_return": None, "holding_days": "4h",
+             "reflection": "Bar reflection."},
+            {"ticker": "BTC-USD", "trade_date": "2026-07-01",
+             "raw_return": -0.03, "alpha_return": -0.01, "holding_days": 5,
+             "reflection": "Daily reflection."},
+        ])
+        entries = {e["date"]: e for e in log.load_entries()}
+        assert entries[BAR_CLOSE]["alpha"] == "n/a"
+        assert entries[BAR_CLOSE]["holding"] == "4h"
+        assert entries["2026-07-01"]["alpha"] == "-1.0%"
+        assert entries["2026-07-01"]["holding"] == "5d"
+        assert all(not e["pending"] for e in entries.values())
+
+    # Reflector without alpha
+
+    def test_reflector_alpha_none_judges_by_raw_return(self):
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value.content = "Correct on the bar."
+        reflector = Reflector(mock_llm)
+        result = reflector.reflect_on_final_decision(
+            final_decision=DECISION_BUY, raw_return=0.008, alpha_return=None,
+        )
+        assert result == "Correct on the bar."
+        messages = mock_llm.invoke.call_args[0][0]
+        human_content = next(c for role, c in messages if role == "human")
+        assert "+0.8%" in human_content
+        assert "Alpha vs" not in human_content
+        assert "judge the call by the raw return" in human_content
+
+    # TradingAgentsGraph._fetch_intraday_return
+
+    def test_fetch_intraday_return_next_bar_close(self):
+        """Raw return = next bar close / decision bar close - 1."""
+        bars = _intraday_bars(
+            ["2026-07-08 04:00", "2026-07-08 08:00", "2026-07-08 12:00"],
+            [100.0, 110.0, 121.0],
+        )
+        mock_graph = MagicMock(spec=TradingAgentsGraph)
+        with patch("tradingagents.dataflows.intraday.load_intraday_ohlcv",
+                   return_value=bars) as loader:
+            raw = TradingAgentsGraph._fetch_intraday_return(
+                mock_graph, "BTC-USD", BAR_CLOSE, "4h",
+            )
+        assert raw == pytest.approx(121.0 / 110.0 - 1)
+        # Loader asked for data up to the *next* bar's close, 4h timeframe.
+        args, kwargs = loader.call_args
+        assert args[0] == "BTC-USD"
+        assert args[1] == datetime(2026, 7, 8, 16, 0)
+        assert kwargs.get("timeframe") == "4h"
+
+    def test_fetch_intraday_return_next_bar_not_closed(self):
+        """Next bar missing from the frame → None (entry stays pending)."""
+        bars = _intraday_bars(
+            ["2026-07-08 04:00", "2026-07-08 08:00"], [100.0, 110.0],
+        )
+        mock_graph = MagicMock(spec=TradingAgentsGraph)
+        with patch("tradingagents.dataflows.intraday.load_intraday_ohlcv",
+                   return_value=bars):
+            raw = TradingAgentsGraph._fetch_intraday_return(
+                mock_graph, "BTC-USD", BAR_CLOSE, "4h",
+            )
+        assert raw is None
+
+    def test_fetch_intraday_return_loader_error_returns_none(self):
+        mock_graph = MagicMock(spec=TradingAgentsGraph)
+        with patch("tradingagents.dataflows.intraday.load_intraday_ohlcv",
+                   side_effect=RuntimeError("network down")):
+            raw = TradingAgentsGraph._fetch_intraday_return(
+                mock_graph, "BTC-USD", BAR_CLOSE, "4h",
+            )
+        assert raw is None
+
+    # TradingAgentsGraph._resolve_pending_entries with intraday entries
+
+    def _resolver_graph(self, log, intraday_return):
+        mock_reflector = MagicMock()
+        mock_reflector.reflect_on_final_decision.return_value = "Lesson learned."
+        mock_graph = MagicMock(spec=TradingAgentsGraph)
+        mock_graph.memory_log = log
+        mock_graph.reflector = mock_reflector
+        mock_graph._resolve_benchmark = MagicMock(return_value="SPY")
+        mock_graph._fetch_returns = MagicMock(return_value=(0.05, 0.02, 5))
+        mock_graph._fetch_intraday_return = MagicMock(return_value=intraday_return)
+        return mock_graph
+
+    def test_resolve_intraday_entry_scored_against_next_bar(self, tmp_path):
+        log = make_log(tmp_path)
+        log.store_decision("BTC-USD", BAR_CLOSE, DECISION_BUY, timeframe="4h")
+        mock_graph = self._resolver_graph(log, intraday_return=0.012)
+        TradingAgentsGraph._resolve_pending_entries(mock_graph, "BTC-USD")
+        mock_graph._fetch_intraday_return.assert_called_once_with(
+            "BTC-USD", BAR_CLOSE, "4h",
+        )
+        mock_graph._fetch_returns.assert_not_called()
+        # Reflection ran without an alpha figure.
+        _, reflect_kwargs = mock_graph.reflector.reflect_on_final_decision.call_args
+        assert reflect_kwargs["alpha_return"] is None
+        assert reflect_kwargs["raw_return"] == 0.012
+        e = log.load_entries()[0]
+        assert e["pending"] is False
+        assert e["raw"] == "+1.2%"
+        assert e["alpha"] == "n/a"
+        assert e["holding"] == "4h"
+
+    def test_resolve_intraday_entry_stays_pending_until_next_bar(self, tmp_path):
+        log = make_log(tmp_path)
+        log.store_decision("BTC-USD", BAR_CLOSE, DECISION_BUY, timeframe="4h")
+        mock_graph = self._resolver_graph(log, intraday_return=None)
+        TradingAgentsGraph._resolve_pending_entries(mock_graph, "BTC-USD")
+        assert len(log.get_pending_entries()) == 1
+        mock_graph.reflector.reflect_on_final_decision.assert_not_called()
+
+    def test_resolve_mixed_daily_and_intraday_entries(self, tmp_path):
+        """A daily run resolves both its own entries and lingering 4H ones,
+        each with the right scorer."""
+        log = make_log(tmp_path)
+        log.store_decision("BTC-USD", "2026-07-01", DECISION_SELL)
+        log.store_decision("BTC-USD", BAR_CLOSE, DECISION_BUY, timeframe="4h")
+        mock_graph = self._resolver_graph(log, intraday_return=0.012)
+        TradingAgentsGraph._resolve_pending_entries(mock_graph, "BTC-USD")
+        mock_graph._fetch_returns.assert_called_once_with(
+            "BTC-USD", "2026-07-01", benchmark="SPY",
+        )
+        mock_graph._fetch_intraday_return.assert_called_once_with(
+            "BTC-USD", BAR_CLOSE, "4h",
+        )
+        entries = {e["date"]: e for e in log.load_entries()}
+        assert entries["2026-07-01"]["alpha"] == "+2.0%"
+        assert entries[BAR_CLOSE]["alpha"] == "n/a"
+        assert not any(e["pending"] for e in entries.values())
+
+    def test_full_intraday_cycle_store_resolve_inject(self, tmp_path):
+        """store 4H pending → resolve against next bar → injected only into
+        4H runs (the automatable core of the plan's two-runs-apart check)."""
+        log = make_log(tmp_path)
+        log.store_decision("BTC-USD", BAR_CLOSE, DECISION_BUY, timeframe="4h")
+        assert log.get_past_context("BTC-USD", timeframe="4h") == ""
+        mock_graph = self._resolver_graph(log, intraday_return=0.012)
+        TradingAgentsGraph._resolve_pending_entries(mock_graph, "BTC-USD")
+        ctx = log.get_past_context("BTC-USD", timeframe="4h")
+        assert "Past analyses of BTC-USD" in ctx
+        assert "Lesson learned." in ctx
+        assert "+1.2%" in ctx
+        assert log.get_past_context("BTC-USD") == ""  # daily run sees nothing
+
+    # _run_graph: bar-close keying end-to-end
+
+    def _run_graph_mock(self, tmp_path, timeframe):
+        mock_graph = MagicMock()
+        mock_graph.memory_log = TradingMemoryLog(
+            {"memory_log_path": str(tmp_path / "mem.md")}
+        )
+        mock_graph.debug = False
+        mock_graph.config = {"timeframe": timeframe}
+        mock_graph.graph.invoke.return_value = {
+            "final_trade_decision": "Rating: Buy\nEnter now."
+        }
+        mock_graph.propagator.get_graph_args.return_value = {}
+        return mock_graph
+
+    def test_run_graph_intraday_keys_entry_by_bar_close(self, tmp_path):
+        """A 13:47 request logs under the 08:00-12:00 bar's close (12:00);
+        a same-window re-run is idempotent; the next window adds an entry."""
+        mock_graph = self._run_graph_mock(tmp_path, "4h")
+        for ts in ("2026-07-08 13:47", "2026-07-08 15:59", "2026-07-08 17:47"):
+            TradingAgentsGraph._run_graph(mock_graph, "BTC-USD", ts)
+        entries = mock_graph.memory_log.load_entries()
+        assert [e["date"] for e in entries] == ["2026-07-08 12:00", "2026-07-08 16:00"]
+        assert all(e["timeframe"] == "4h" for e in entries)
+
+    def test_run_graph_daily_entry_unchanged(self, tmp_path):
+        mock_graph = self._run_graph_mock(tmp_path, "1d")
+        TradingAgentsGraph._run_graph(mock_graph, "NVDA", "2026-01-10")
+        text = (tmp_path / "mem.md").read_text(encoding="utf-8")
+        assert "[2026-01-10 | NVDA | Buy | pending]\n\nDECISION:" in text
+        assert "Timeframe:" not in text
+
+    # bar_close_timestamp / timeframe_delta
+
+    def test_bar_close_floor_mid_window(self):
+        assert bar_close_timestamp("2026-07-08 13:47", "4h") == "2026-07-08 12:00"
+
+    def test_bar_close_exact_boundary_counts_as_closed(self):
+        assert bar_close_timestamp("2026-07-08 12:00", "4h") == "2026-07-08 12:00"
+
+    def test_bar_close_date_only_is_midnight_boundary(self):
+        assert bar_close_timestamp("2026-07-08", "4h") == "2026-07-08 00:00"
+
+    def test_bar_close_future_request_capped_by_now(self):
+        now = datetime(2026, 7, 8, 10, 30)
+        assert (
+            bar_close_timestamp("2026-07-08 18:00", "4h", now=now)
+            == "2026-07-08 08:00"
+        )
+
+    def test_timeframe_delta_valid_and_invalid(self):
+        assert timeframe_delta("4h") == timedelta(hours=4)
+        for bad in ("1d", "0h", "fast", ""):
+            with pytest.raises(ValueError):
+                timeframe_delta(bad)
 
 
 # ---------------------------------------------------------------------------

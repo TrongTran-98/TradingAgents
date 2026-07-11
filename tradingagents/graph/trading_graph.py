@@ -29,7 +29,12 @@ from tradingagents.agents.utils.agent_utils import (
 )
 from tradingagents.agents.utils.memory import TradingMemoryLog
 from tradingagents.dataflows.config import set_config
-from tradingagents.dataflows.time_utils import filesystem_datetime_tag
+from tradingagents.dataflows.time_utils import (
+    bar_close_timestamp,
+    filesystem_datetime_tag,
+    parse_trade_datetime,
+    timeframe_delta,
+)
 from tradingagents.dataflows.utils import safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.llm_clients import create_llm_client
@@ -294,12 +299,47 @@ class TradingAgentsGraph:
             )
             return None, None, None
 
+    def _fetch_intraday_return(
+        self, ticker: str, bar_close: str, timeframe: str = "4h",
+    ) -> float | None:
+        """Raw return of the intraday bar following the decision bar.
+
+        Intraday entries are scored against the *next* bar's close:
+        ``next bar close / decision bar close - 1``. Alpha is deliberately
+        omitted — no equity benchmark has 24/7 bars aligned with crypto 4H
+        windows, so any benchmark figure would be noise. Returns ``None``
+        when the next bar hasn't closed yet or data is unavailable, leaving
+        the entry pending for a retry on the next run.
+        """
+        from tradingagents.dataflows.intraday import load_intraday_ohlcv
+
+        try:
+            close_dt = parse_trade_datetime(bar_close)
+            bar = timeframe_delta(timeframe)
+            # Bars are labeled by open time: the decision bar opens one bar
+            # before its close; the next bar opens at the decision bar's close.
+            bars = load_intraday_ohlcv(ticker, close_dt + bar, timeframe=timeframe)
+            closes = bars.set_index("Date")["Close"]
+            decision_open, next_open = close_dt - bar, close_dt
+            if decision_open not in closes.index or next_open not in closes.index:
+                return None  # next bar not closed yet — try again next run
+            return float(closes.loc[next_open] / closes.loc[decision_open] - 1)
+        except Exception as e:
+            logger.warning(
+                "Could not resolve intraday outcome for %s bar closing %s "
+                "(will retry next run): %s",
+                ticker, bar_close, e,
+            )
+            return None
+
     def _resolve_pending_entries(self, ticker: str) -> None:
         """Resolve pending log entries for ticker at the start of a new run.
 
         Fetches returns for each same-ticker pending entry, generates reflections,
         then writes all updates in a single atomic batch write to avoid redundant I/O.
         Skips entries whose price data is not yet available (too recent or delisted).
+        Daily entries score against next-day returns with a benchmark alpha;
+        intraday entries score against the next bar's close, raw return only.
 
         Trade-off: only same-ticker entries are resolved per run.  Entries for
         other tickers accumulate until that ticker is run again.
@@ -311,21 +351,19 @@ class TradingAgentsGraph:
         benchmark = self._resolve_benchmark(ticker)
         updates = []
         for entry in pending:
-            # Intraday entries carry a "YYYY-mm-dd HH:MM" date and are scored
-            # against the next 4H bar's close, not next-day daily returns —
-            # that resolver lands in Phase 6 of the 4H plan. Skip them here so
-            # the daily resolver doesn't warn-and-retry them on every run.
-            if " " in entry["date"]:
-                logger.debug(
-                    "Skipping intraday entry %s %s: 4H outcome resolution not implemented yet",
-                    ticker, entry["date"],
+            if entry.get("timeframe", "1d") != "1d":
+                raw = self._fetch_intraday_return(
+                    ticker, entry["date"], entry["timeframe"],
                 )
-                continue
-            raw, alpha, days = self._fetch_returns(
-                ticker, entry["date"], benchmark=benchmark,
-            )
-            if raw is None:
-                continue  # price not available yet — try again next run
+                if raw is None:
+                    continue  # next bar not closed / data unavailable — retry next run
+                alpha, days = None, entry["timeframe"]
+            else:
+                raw, alpha, days = self._fetch_returns(
+                    ticker, entry["date"], benchmark=benchmark,
+                )
+                if raw is None:
+                    continue  # price not available yet — try again next run
             reflection = self.reflector.reflect_on_final_decision(
                 final_decision=entry.get("decision", ""),
                 raw_return=raw,
@@ -434,7 +472,8 @@ class TradingAgentsGraph:
         """Execute the graph and write the resulting state to disk and memory log."""
         # Initialize state — inject memory log context for PM and the
         # deterministically resolved instrument identity for all agents.
-        past_context = self.memory_log.get_past_context(company_name)
+        timeframe = self.config.get("timeframe", "1d")
+        past_context = self.memory_log.get_past_context(company_name, timeframe=timeframe)
         instrument_context = self.resolve_instrument_context(company_name, asset_type)
         init_agent_state = self.propagator.create_initial_state(
             company_name,
@@ -442,7 +481,7 @@ class TradingAgentsGraph:
             asset_type=asset_type,
             past_context=past_context,
             instrument_context=instrument_context,
-            timeframe=self.config.get("timeframe", "1d"),
+            timeframe=timeframe,
         )
         args = self.propagator.get_graph_args()
 
@@ -481,10 +520,18 @@ class TradingAgentsGraph:
         self._log_state(trade_date, final_state)
 
         # Store decision for deferred reflection on the next same-ticker run.
+        # Intraday entries are keyed by the analysis bar's *close* timestamp —
+        # one entry per (ticker, bar close), so a re-run inside the same bar
+        # window hits the idempotency guard instead of double-logging.
+        log_date = (
+            str(trade_date) if timeframe == "1d"
+            else bar_close_timestamp(str(trade_date), timeframe)
+        )
         self.memory_log.store_decision(
             ticker=company_name,
-            trade_date=trade_date,
+            trade_date=log_date,
             final_trade_decision=final_state["final_trade_decision"],
+            timeframe=timeframe,
         )
 
         # Clear checkpoint on successful completion to avoid stale state.

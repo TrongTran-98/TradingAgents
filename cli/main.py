@@ -43,6 +43,7 @@ from cli.utils import (
     select_shallow_thinking_agent,
     select_timeframe,
 )
+from tradingagents.dataflows.time_utils import filesystem_datetime_tag
 from tradingagents.default_config import DEFAULT_CONFIG, validate_timeframe
 from tradingagents.graph.analyst_execution import (
     AnalystWallTimeTracker,
@@ -1047,8 +1048,14 @@ def run_analysis(checkpoint: bool | None = None):
     # Track start time for elapsed display
     start_time = time.time()
 
-    # Create result directory
-    results_dir = Path(config["results_dir"]) / selections["ticker"] / selections["analysis_date"]
+    # Create result directory. 4H runs get a timestamped leaf
+    # ("2026-07-08_12-00") so an intraday and a daily run for the same
+    # ticker/day never collide; daily paths are byte-identical to before.
+    results_dir = (
+        Path(config["results_dir"])
+        / selections["ticker"]
+        / filesystem_datetime_tag(selections["analysis_date"])
+    )
     results_dir.mkdir(parents=True, exist_ok=True)
     report_dir = results_dir / "reports"
     report_dir.mkdir(parents=True, exist_ok=True)

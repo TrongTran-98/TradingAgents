@@ -1,6 +1,6 @@
 # Plan: 4H Day-Trading Mode
 
-Status: **Phase 5 implemented** (manual read-through pending; Phases 6–7 remaining)
+Status: **Phase 6 implemented, automated verification green** (Phase 6 manual checks + Phase 7 remaining)
 Owner: unassigned
 Created: 2026-07-08
 
@@ -246,11 +246,24 @@ assumes a bare date.
       [tests/test_news_analyst_prompt.py](../../tests/test_news_analyst_prompt.py)):
       assert the day-trading prompt variant contains the expected framing
       strings and the daily prompt is unchanged when `timeframe == "1d"`.
-- [ ] Manual read-through: run one full graph propagate on `BTC-USD` at a
+- [x] Manual read-through: run one full graph propagate on `BTC-USD` at a
       recent timestamp in 4H mode with `debug=True`, read the market
       analyst and trader outputs end-to-end, confirm the language and
       numeric stops/targets are 4H-bar-scaled (e.g. stop distances in the
       tens-to-low-hundreds of dollars for BTC, not swing-sized).
+      Verified 2026-07-11 with `qwen/qwen3.5-flash-02-23` via OpenRouter:
+      market report used 4H bar timestamps (`YYYY-MM-DD HH:MM`) throughout,
+      leaned on 10 EMA/RSI/MACD/ATR with 50/200 SMA as background context,
+      and the trader/final decision sized the stop as a 4H-ATR multiple
+      (2.35x ATR ≈ $737) with an explicit hour-scale holding horizon
+      ("1-4 4H bars, 4-16 hours"). Independently cross-checked the ATR via
+      `get_intraday_stock_stats_indicators_window` (~$707-845 across recent
+      bars), matching the agent's cited value. Note: first three attempts
+      (two OpenRouter free-tier 429s, one run on a stale `.venv/site-packages`
+      install missing the Phase 4 timeframe-propagation commits) gave a
+      false negative before this passing run — invoke as
+      `PYTHONPATH=<repo root> .venv/bin/python <script>` (or `python -m`),
+      not a bare script path, to avoid silently picking up the stale install.
 
 ---
 
@@ -260,27 +273,29 @@ assumes a bare date.
 (`trading_memory.md`) work at 4H granularity without colliding with daily
 entries for the same ticker/day.
 
-- [ ] Update the `results_dir` path construction in
+- [x] Update the `results_dir` path construction in
       [cli/main.py:1021](../../cli/main.py) from
       `ticker/analysis_date` to `ticker/analysis_date_time` (e.g.
       `BTC-USD/2026-07-08_12-00`) when timeframe is `4h`, keeping the
       existing `ticker/YYYY-mm-dd` layout untouched for daily runs.
-- [ ] Update the reflection/realized-return logic (memory log writer,
+- [x] Update the reflection/realized-return logic (memory log writer,
       likely in [tradingagents/agents/utils/memory.py](../../tradingagents/agents/utils/memory.py)
       or [tradingagents/graph/reflection.py](../../tradingagents/graph/reflection.py))
       so that for 4H entries, "realized return" is computed against the
       *next* 4H bar's close rather than next calendar day's close — reuse
       Phase 1's intraday loader to fetch that bar when the entry is later
       revisited.
-- [ ] Confirm `~/.tradingagents/memory/trading_memory.md` entries are
+- [x] Confirm `~/.tradingagents/memory/trading_memory.md` entries are
       unambiguous about timeframe (e.g. an explicit `Timeframe: 4h` field
       per entry) so a later daily run for the same ticker doesn't get fed
       mismatched-horizon lessons — filter injected memory context by
       matching timeframe.
 
 **Verification**:
-- [ ] `pytest tests/test_memory_log.py tests/test_reporting.py -v`, extended
-      with new cases for the 4h path, all pass.
+- [x] `pytest tests/test_memory_log.py tests/test_reporting.py -v`, extended
+      with new cases for the 4h path, all pass. (Run 2026-07-11 via the
+      allowlisted full-suite `pytest -q` — command-permission outage again —
+      677 passed, 2 pre-existing skips, includes all 27 new Phase 6 tests.)
 - [ ] Manual run: execute two 4H-mode analyses on `BTC-USD` four hours
       apart (or two synthetic timestamps four hours apart against cached
       data), confirm the second run's Portfolio Manager prompt includes a
@@ -615,3 +630,45 @@ hash and any deviations from the plan above.)_
   ⚠️ Changes left uncommitted — `git add` was blocked by the
   command-permission outage for the whole session (only exact-allowlisted
   commands ran); stage everything and commit as the Phase 5 commit.
+- 2026-07-11 — Phase 6 implemented. Memory log
+  (`tradingagents/agents/utils/memory.py`): `store_decision` gained a
+  `timeframe` param — intraday entries carry a body-leading `Timeframe: 4h`
+  field (matched only at body start, so a "Timeframe:" line in LLM prose
+  can't mislabel an entry) while daily entries stay byte-identical;
+  `get_past_context` gained a `timeframe` filter (same- and cross-ticker
+  lessons both filtered); `update_with_outcome`/`batch_update_with_outcomes`
+  accept `alpha_return=None` (rendered `n/a` per Design Note 4's no-alpha
+  rule) and a string bar-duration holding label (`"4h"` instead of `Nd`).
+  Parser infers `4h` for timestamp-dated legacy entries missing the field
+  (Phase 4/5-era logs). New `time_utils` helpers `timeframe_delta` and
+  `bar_close_timestamp` (epoch-anchored floor, capped at wall clock);
+  `_run_graph` keys intraday entries by the analysis bar's **close**
+  timestamp, so two runs inside one bar window hit the idempotency guard —
+  one entry per (ticker, bar close) exactly as Design Note 4 specifies.
+  Reflection: new `TradingAgentsGraph._fetch_intraday_return` scores a 4H
+  entry as `next bar close / decision bar close - 1` via the Phase 1 loader
+  (returns None → stays pending while the next bar is still forming);
+  `_resolve_pending_entries` branches per entry on its timeframe (a daily
+  run also resolves lingering 4H entries and vice versa, replacing the
+  Phase 4 skip-guard); `Reflector.reflect_on_final_decision` accepts
+  `alpha_return=None` and swaps the alpha line for "judge the call by the
+  raw return". Reporting: the CLI `results_dir` leaf is now
+  `filesystem_datetime_tag(analysis_date)` (`BTC-USD/2026-07-08_12-00`;
+  daily paths byte-identical pass-through). Minor deviation: the log
+  reflection *system* prompt gained "(…or the raw return when alpha is
+  unavailable)" — shared with daily entries, an instruction-level tweak,
+  not agent-facing analysis framing. Verification: 27 new tests across
+  `tests/test_memory_log.py` (TestIntradayEntries: tagging/filtering/
+  next-bar scoring/bar-close keying/e2e store→resolve→inject cycle) and
+  `tests/test_reporting.py` (daily-vs-4h leaf collision test). Full
+  `pytest -q` (allowlisted; the command-permission outage recurred again):
+  **677 passed, 2 pre-existing skips, zero failures**. Remaining Phase 6
+  open items are the two manual checks (live two-runs-4h-apart PM-prompt
+  read-through; report-tree inspection after a real run) — the synthetic
+  halves are automated (`test_run_graph_intraday_keys_entry_by_bar_close`,
+  `test_full_intraday_cycle_store_resolve_inject`,
+  `test_results_dir_leaf_daily_vs_4h_no_collision`).
+  ⚠️ Changes left uncommitted — the command-permission outage recurred and
+  blocked `git add`/`git commit` (even the allowlisted-pattern commit form);
+  commit as: `git add -A && git commit -m "feat(memory): 4H reporting,
+  timeframe-tagged memory, next-bar reflection (Phase 6)"`.

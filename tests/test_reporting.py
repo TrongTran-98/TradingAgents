@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tradingagents.dataflows.time_utils import filesystem_datetime_tag
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.reporting import write_report_tree
 
@@ -48,3 +49,25 @@ def test_save_reports_defaults_under_results_dir(tmp_path):
     assert out.exists()
     assert out.parent.parent.name == "reports"  # results_dir/reports/AAPL_<stamp>/...
     assert out.parent.name.startswith("AAPL_")
+
+
+@pytest.mark.unit
+def test_results_dir_leaf_daily_vs_4h_no_collision(tmp_path):
+    """The CLI builds its run directory as
+    ticker/<filesystem_datetime_tag(analysis_date)> (cli/main.py). A 4H run
+    and a daily run for the same ticker/day must land in distinct,
+    filesystem-safe leaves, with the daily layout byte-identical to before."""
+    daily = tmp_path / "BTC-USD" / filesystem_datetime_tag("2026-07-08")
+    intraday = tmp_path / "BTC-USD" / filesystem_datetime_tag("2026-07-08 12:00")
+
+    assert daily.name == "2026-07-08"  # daily path untouched
+    assert intraday.name == "2026-07-08_12-00"  # plan's Phase 6 layout
+    assert daily != intraday
+    # No characters that break Windows paths or shell quoting.
+    assert ":" not in intraday.name and " " not in intraday.name
+
+    # Both trees can coexist on disk with the CLI's reports/ substructure.
+    for leaf in (daily, intraday):
+        (leaf / "reports").mkdir(parents=True)
+        (leaf / "message_tool.log").touch()
+    assert (daily / "reports").is_dir() and (intraday / "reports").is_dir()

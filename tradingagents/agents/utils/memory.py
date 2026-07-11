@@ -14,6 +14,8 @@ class TradingMemoryLog:
     # Precompiled patterns — avoids re-compilation on every load_entries() call
     _DECISION_RE = re.compile(r"DECISION:\n(.*?)(?=\nREFLECTION:|\Z)", re.DOTALL)
     _REFLECTION_RE = re.compile(r"REFLECTION:\n(.*?)$", re.DOTALL)
+    # Anchored at body start so a "Timeframe:" line inside LLM prose never matches
+    _TIMEFRAME_RE = re.compile(r"^Timeframe:[ \t]*(\S+)")
 
     def __init__(self, config: dict = None):
         cfg = config or {}
@@ -32,8 +34,16 @@ class TradingMemoryLog:
         ticker: str,
         trade_date: str,
         final_trade_decision: str,
+        timeframe: str = "1d",
     ) -> None:
-        """Append pending entry at end of propagate(). No LLM call."""
+        """Append pending entry at end of propagate(). No LLM call.
+
+        Intraday entries pass the decision bar's *close* timestamp
+        (``YYYY-mm-dd HH:MM``) as ``trade_date`` and carry an explicit
+        ``Timeframe:`` body field so injection can filter by horizon. Daily
+        entries stay field-free (implicitly ``1d``), keeping the on-disk
+        format byte-identical to before intraday support.
+        """
         if not self._log_path:
             return
         # Idempotency guard: fast raw-text scan instead of full parse
@@ -44,7 +54,8 @@ class TradingMemoryLog:
                     return
         rating = parse_rating(final_trade_decision)
         tag = f"[{trade_date} | {ticker} | {rating} | pending]"
-        entry = f"{tag}\n\nDECISION:\n{final_trade_decision}{self._SEPARATOR}"
+        timeframe_field = "" if timeframe == "1d" else f"Timeframe: {timeframe}\n\n"
+        entry = f"{tag}\n\n{timeframe_field}DECISION:\n{final_trade_decision}{self._SEPARATOR}"
         with open(self._log_path, "a", encoding="utf-8") as f:
             f.write(entry)
 
@@ -67,9 +78,19 @@ class TradingMemoryLog:
         """Return entries with outcome:pending (for Phase B)."""
         return [e for e in self.load_entries() if e.get("pending")]
 
-    def get_past_context(self, ticker: str, n_same: int = 5, n_cross: int = 3) -> str:
-        """Return formatted past context string for agent prompt injection."""
-        entries = [e for e in self.load_entries() if not e.get("pending")]
+    def get_past_context(
+        self, ticker: str, n_same: int = 5, n_cross: int = 3, timeframe: str = "1d"
+    ) -> str:
+        """Return formatted past context string for agent prompt injection.
+
+        Only entries whose timeframe matches the current run are injected, so
+        a daily run is never fed 4H-horizon lessons and vice versa.
+        """
+        entries = [
+            e
+            for e in self.load_entries()
+            if not e.get("pending") and e.get("timeframe", "1d") == timeframe
+        ]
         if not entries:
             return ""
 
@@ -101,8 +122,8 @@ class TradingMemoryLog:
         ticker: str,
         trade_date: str,
         raw_return: float,
-        alpha_return: float,
-        holding_days: int,
+        alpha_return: float | None,
+        holding_days: int | str,
         reflection: str,
     ) -> None:
         """Replace pending tag and append REFLECTION section using atomic write.
@@ -110,6 +131,10 @@ class TradingMemoryLog:
         Finds the first pending entry matching (trade_date, ticker), updates
         its tag with return figures, and appends a REFLECTION section.  Uses
         a temp-file + os.replace() so a crash mid-write never corrupts the log.
+
+        Intraday entries pass ``alpha_return=None`` (no benchmark has 24/7
+        bars aligned with crypto 4H windows — raw return only, tagged
+        ``n/a``) and a bar-duration string like ``"4h"`` for ``holding_days``.
         """
         if not self._log_path or not self._log_path.exists():
             return
@@ -119,7 +144,8 @@ class TradingMemoryLog:
 
         pending_prefix = f"[{trade_date} | {ticker} |"
         raw_pct = f"{raw_return:+.1%}"
-        alpha_pct = f"{alpha_return:+.1%}"
+        alpha_pct = "n/a" if alpha_return is None else f"{alpha_return:+.1%}"
+        holding = holding_days if isinstance(holding_days, str) else f"{holding_days}d"
 
         updated = False
         new_blocks = []
@@ -142,7 +168,7 @@ class TradingMemoryLog:
                 rating = fields[2]
                 new_tag = (
                     f"[{trade_date} | {ticker} | {rating}"
-                    f" | {raw_pct} | {alpha_pct} | {holding_days}d]"
+                    f" | {raw_pct} | {alpha_pct} | {holding}]"
                 )
                 rest = "\n".join(lines[1:])
                 new_blocks.append(
@@ -165,7 +191,9 @@ class TradingMemoryLog:
         """Apply multiple outcome updates in a single read + atomic write.
 
         Each element of updates must have keys: ticker, trade_date,
-        raw_return, alpha_return, holding_days, reflection.
+        raw_return, alpha_return, holding_days, reflection. Intraday updates
+        follow the same conventions as ``update_with_outcome`` (``None``
+        alpha, string bar-duration holding).
         """
         if not self._log_path or not self._log_path.exists() or not updates:
             return
@@ -193,10 +221,18 @@ class TradingMemoryLog:
                     fields = [f.strip() for f in tag_line[1:-1].split("|")]
                     rating = fields[2]
                     raw_pct = f"{upd['raw_return']:+.1%}"
-                    alpha_pct = f"{upd['alpha_return']:+.1%}"
+                    alpha_pct = (
+                        "n/a" if upd["alpha_return"] is None
+                        else f"{upd['alpha_return']:+.1%}"
+                    )
+                    holding = (
+                        upd["holding_days"]
+                        if isinstance(upd["holding_days"], str)
+                        else f"{upd['holding_days']}d"
+                    )
                     new_tag = (
                         f"[{trade_date} | {ticker} | {rating}"
-                        f" | {raw_pct} | {alpha_pct} | {upd['holding_days']}d]"
+                        f" | {raw_pct} | {alpha_pct} | {holding}]"
                     )
                     rest = "\n".join(lines[1:])
                     new_blocks.append(
@@ -274,6 +310,13 @@ class TradingMemoryLog:
             "holding": fields[5] if len(fields) > 5 else None,
         }
         body = "\n".join(lines[1:]).strip()
+        # Explicit Timeframe: field wins; a timestamp-dated entry without one
+        # (written before the field existed) is still intraday, default 4h.
+        timeframe_match = self._TIMEFRAME_RE.match(body)
+        if timeframe_match:
+            entry["timeframe"] = timeframe_match.group(1)
+        else:
+            entry["timeframe"] = "4h" if " " in entry["date"] else "1d"
         decision_match = self._DECISION_RE.search(body)
         reflection_match = self._REFLECTION_RE.search(body)
         entry["decision"] = decision_match.group(1).strip() if decision_match else ""
