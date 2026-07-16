@@ -278,6 +278,23 @@ def select_timeframe(asset_type: AssetType = AssetType.STOCK) -> str:
     return choice or "1d"
 
 
+def resolve_timeframe_flag(value: str, asset_type: AssetType) -> str:
+    """Resolve an explicit ``--timeframe`` command-line flag.
+
+    Unlike TRADINGAGENTS_TIMEFRAME (a standing preference that quietly
+    downgrades to daily with a warning on non-crypto tickers), an explicit
+    per-run flag that can't be honored is a user error: raise ``ValueError``
+    rather than silently analyze a different timeframe than the one asked for.
+    """
+    timeframe = canonicalize_timeframe(value)
+    if timeframe != "1d" and asset_type != AssetType.CRYPTO:
+        raise ValueError(
+            f"--timeframe {timeframe} is only supported for crypto tickers "
+            f"(e.g. BTC-USD); day-trading mode is crypto-only for now."
+        )
+    return timeframe
+
+
 # Mainstream OpenRouter chat-LLM provider namespaces. We surface the newest
 # models from these rather than the universal-newest, which is dominated by
 # niche/experimental releases. These are the general-purpose chat providers;

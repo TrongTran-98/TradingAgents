@@ -34,8 +34,11 @@ from cli.utils import (
     detect_asset_type,
     ensure_api_key,
     get_ticker,
+    is_valid_ticker_input,
+    normalize_ticker_symbol,
     prompt_openai_compatible_url,
     resolve_backend_url,
+    resolve_timeframe_flag,
     select_analysts,
     select_deep_thinking_agent,
     select_llm_provider,
@@ -483,8 +486,19 @@ def update_display(layout, spinner_text=None, stats_handler=None, start_time=Non
     layout["footer"].update(Panel(stats_table, border_style="grey50"))
 
 
-def get_user_selections():
-    """Get all user selections before starting the analysis display."""
+def get_user_selections(
+    ticker: str | None = None,
+    date: str | None = None,
+    timeframe: str | None = None,
+):
+    """Get all user selections before starting the analysis display.
+
+    ``ticker``, ``date``, and ``timeframe`` are optional command-line values
+    (from ``--ticker`` / ``--date`` / ``--timeframe``); when provided, the
+    corresponding interactive prompt is skipped — same precedence rule as the
+    TRADINGAGENTS_* env skips, with the flag winning over the env var since
+    it is per-run and more explicit.
+    """
     # Display ASCII art welcome message
     with open(Path(__file__).parent / "static" / "welcome.txt", encoding="utf-8") as f:
         welcome_ascii = f.read()
@@ -537,14 +551,24 @@ def get_user_selections():
         return prompt_fn()
 
     # Step 1: Ticker symbol
-    console.print(
-        create_question_box(
-            "Step 1: Ticker Symbol",
-            "Enter the ticker, with exchange suffix when needed (e.g. SPY, 0700.HK, BTC-USD)",
-            "SPY",
+    if ticker is not None:
+        if not is_valid_ticker_input(ticker) or not ticker.strip():
+            console.print(
+                f"[red]Invalid ticker {ticker!r}. Use a symbol like "
+                f"AAPL, 000404.SZ, 0700.HK, GC=F.[/red]"
+            )
+            exit(1)
+        selected_ticker = normalize_ticker_symbol(ticker)
+        console.print(f"[green]✓ Ticker from command line:[/green] {selected_ticker}")
+    else:
+        console.print(
+            create_question_box(
+                "Step 1: Ticker Symbol",
+                "Enter the ticker, with exchange suffix when needed (e.g. SPY, 0700.HK, BTC-USD)",
+                "SPY",
+            )
         )
-    )
-    selected_ticker = get_ticker()
+        selected_ticker = get_ticker()
     asset_type = detect_asset_type(selected_ticker)
     # Only announce when it's not the default stock path, to avoid printing
     # "stock" on every run.
@@ -558,35 +582,57 @@ def get_user_selections():
     # daily-only flow with no extra prompt (crypto-first scope). No step
     # number so the numbering stays identical for non-crypto runs, like the
     # provider-region sub-prompts.
-    if asset_type == AssetType.CRYPTO and not os.environ.get("TRADINGAGENTS_TIMEFRAME"):
-        console.print(
-            create_question_box(
-                "Trading Timeframe",
-                "Select the bar interval: daily (EOD) or 4-hour day trading",
-                "1d",
+    if timeframe is not None:
+        try:
+            timeframe = resolve_timeframe_flag(timeframe, asset_type)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            exit(1)
+        console.print(f"[green]✓ Timeframe from command line:[/green] {timeframe}")
+    else:
+        if asset_type == AssetType.CRYPTO and not os.environ.get(
+            "TRADINGAGENTS_TIMEFRAME"
+        ):
+            console.print(
+                create_question_box(
+                    "Trading Timeframe",
+                    "Select the bar interval: daily (EOD) or 4-hour day trading",
+                    "1d",
+                )
             )
-        )
-    timeframe = select_timeframe(asset_type)
-    if timeframe != "1d":
-        console.print(f"[green]Selected timeframe:[/green] {timeframe}")
+        timeframe = select_timeframe(asset_type)
+        if timeframe != "1d":
+            console.print(f"[green]Selected timeframe:[/green] {timeframe}")
 
     # Step 2: Analysis date
-    if timeframe == "1d":
-        default_date = datetime.datetime.now().strftime("%Y-%m-%d")
-        date_prompt = "Enter the analysis date (YYYY-MM-DD)"
+    if date is not None:
+        try:
+            analysis_date = canonicalize_analysis_date(date, timeframe)
+        except ValueError as exc:
+            console.print(f"[red]{exc}[/red]")
+            exit(1)
+        console.print(
+            f"[green]✓ Analysis date from command line:[/green] {analysis_date}"
+        )
     else:
-        default_date = datetime.datetime.now(datetime.timezone.utc).strftime(
-            "%Y-%m-%d %H:%M"
+        if timeframe == "1d":
+            default_date = datetime.datetime.now().strftime("%Y-%m-%d")
+            date_prompt = "Enter the analysis date (YYYY-MM-DD)"
+        else:
+            default_date = datetime.datetime.now(datetime.timezone.utc).strftime(
+                "%Y-%m-%d %H:%M"
+            )
+            date_prompt = (
+                "Enter the analysis date or UTC timestamp (YYYY-MM-DD [HH:MM])"
+            )
+        console.print(
+            create_question_box(
+                "Step 2: Analysis Date",
+                date_prompt,
+                default_date,
+            )
         )
-        date_prompt = "Enter the analysis date or UTC timestamp (YYYY-MM-DD [HH:MM])"
-    console.print(
-        create_question_box(
-            "Step 2: Analysis Date",
-            date_prompt,
-            default_date,
-        )
-    )
-    analysis_date = get_analysis_date(timeframe)
+        analysis_date = get_analysis_date(timeframe)
 
     # Step 3: Output language (skipped when set via TRADINGAGENTS_OUTPUT_LANGUAGE)
     if os.environ.get("TRADINGAGENTS_OUTPUT_LANGUAGE"):
@@ -1019,9 +1065,14 @@ def _build_run_config(selections: dict, checkpoint: bool | None) -> dict:
     return validate_timeframe(config)
 
 
-def run_analysis(checkpoint: bool | None = None):
+def run_analysis(
+    checkpoint: bool | None = None,
+    ticker: str | None = None,
+    date: str | None = None,
+    timeframe: str | None = None,
+):
     # First get all user selections
-    selections = get_user_selections()
+    selections = get_user_selections(ticker=ticker, date=date, timeframe=timeframe)
 
     config = _build_run_config(selections, checkpoint)
 
@@ -1306,6 +1357,27 @@ def run_analysis(checkpoint: bool | None = None):
 
 @app.command()
 def analyze(
+    ticker: str | None = typer.Option(
+        None,
+        "--ticker",
+        "-t",
+        help="Ticker symbol (e.g. SPY, 0700.HK, BTC-USD); skips the "
+        "interactive ticker prompt.",
+    ),
+    date: str | None = typer.Option(
+        None,
+        "--date",
+        "-d",
+        help="Analysis date, YYYY-MM-DD; in 4h mode also 'YYYY-MM-DD HH:MM' "
+        "(24h clock, UTC). Skips the date prompt.",
+    ),
+    timeframe: str | None = typer.Option(
+        None,
+        "--timeframe",
+        help="Bar interval: 1d (daily, default) or 4h (day trading, crypto "
+        "tickers only). Skips the timeframe prompt and overrides "
+        "TRADINGAGENTS_TIMEFRAME.",
+    ),
     checkpoint: bool | None = typer.Option(
         None,
         "--checkpoint/--no-checkpoint",
@@ -1322,7 +1394,7 @@ def analyze(
         from tradingagents.graph.checkpointer import clear_all_checkpoints
         n = clear_all_checkpoints(DEFAULT_CONFIG["data_cache_dir"])
         console.print(f"[yellow]Cleared {n} checkpoint(s).[/yellow]")
-    run_analysis(checkpoint=checkpoint)
+    run_analysis(checkpoint=checkpoint, ticker=ticker, date=date, timeframe=timeframe)
 
 
 if __name__ == "__main__":

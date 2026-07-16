@@ -201,6 +201,26 @@ An interface will appear showing results as they load, letting you track the age
   <img src="assets/cli/cli_transaction.png" width="100%" style="display: inline-block; margin: 0 2%;">
 </p>
 
+### Day Trading (4H)
+
+For crypto tickers (e.g. `BTC-USD`, `ETH-USD`), TradingAgents can run in day-trading mode on 4-hour bars instead of daily bars. When the CLI detects a crypto ticker it adds a Trading Timeframe prompt — pick "Day trading — one decision per closed 4-hour bar (UTC)". Non-crypto tickers keep today's daily-only flow; equity session-calendar alignment is a planned follow-up.
+
+- **Config**: `timeframe` — `"1d"` (default) or `"4h"`; the `TRADINGAGENTS_TIMEFRAME` env var sets it non-interactively and skips the prompt, and the `--timeframe` CLI flag overrides both. Any other value fails loudly at startup.
+- **CLI flags**: the per-run inputs can be passed on the command line to skip their prompts — handy for re-invoking the CLI once per closed 4H bar: `python -m cli.main --ticker BTC-USD --timeframe 4h --date "2026-07-08 12:00"`. `--timeframe 4h` on a non-crypto ticker is rejected (the env var instead warns and falls back to daily).
+- **Analysis date**: in 4h mode the date prompt also accepts a UTC timestamp, `YYYY-MM-DD HH:MM` (24h clock). Date-only input means the last closed 4H bar of that day. The analyzed bar is always the most recently *closed* 4H candle at or before the requested time — the still-forming bar is never used, preserving the framework's look-ahead guarantee.
+- **Data**: yfinance 60-minute bars resampled into 4H candles on fixed UTC boundaries (00:00, 04:00, ... 20:00). Note yfinance caps 60-minute history at roughly 730 days, so intraday indicator lookbacks are limited to that window (daily mode keeps its 5-year window).
+- **Agent framing**: analysts and the trader reason on 4H bars — indicator periods count bars rather than days, stops/targets are sized in 4H-bar ATR multiples, and the final decision states a holding horizon in hours. News and sentiment stay day-granular and are flagged to the agents as lower-frequency background context.
+- **Reports and memory**: report directories gain the bar time (`results/BTC-USD/2026-07-08_12-00/`), so 4H and daily runs for the same day never collide. Decision-log entries are tagged `Timeframe: 4h`, scored against the *next* 4H bar's close (raw return only — there is no meaningful equity benchmark for a 4-hour 24/7 window, so alpha is omitted), and filtered by timeframe so daily runs never ingest 4H lessons or vice versa.
+
+Programmatic use:
+
+```python
+config = DEFAULT_CONFIG.copy()
+config["timeframe"] = "4h"
+ta = TradingAgentsGraph(debug=True, config=config)
+_, decision = ta.propagate("BTC-USD", "2026-07-08 12:00")  # UTC
+```
+
 ## TradingAgents Package
 
 ### Implementation Details

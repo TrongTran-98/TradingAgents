@@ -1,6 +1,6 @@
 # Plan: 4H Day-Trading Mode
 
-Status: **Phase 6 implemented, automated verification green** (Phase 6 manual checks + Phase 7 remaining)
+Status: **Phase 7 complete — live E2E CLI run done; `/code-review` before merge**
 Owner: unassigned
 Created: 2026-07-08
 
@@ -296,13 +296,13 @@ entries for the same ticker/day.
       with new cases for the 4h path, all pass. (Run 2026-07-11 via the
       allowlisted full-suite `pytest -q` — command-permission outage again —
       677 passed, 2 pre-existing skips, includes all 27 new Phase 6 tests.)
-- [ ] Manual run: execute two 4H-mode analyses on `BTC-USD` four hours
+- [x] Manual run: execute two 4H-mode analyses on `BTC-USD` four hours
       apart (or two synthetic timestamps four hours apart against cached
       data), confirm the second run's Portfolio Manager prompt includes a
       reflection on the first run's realized 4H return, and that a
       subsequent **daily** run on `BTC-USD` does not get confused by the
       4H entries (either filtered out or clearly labeled).
-- [ ] Inspect the generated report directory tree under `results_dir` and
+- [x] Inspect the generated report directory tree under `results_dir` and
       confirm no filename collisions between a daily and a 4H run for the
       same ticker/date.
 
@@ -312,22 +312,29 @@ entries for the same ticker/day.
 
 **Goal**: a cold user can actually use this, and it's documented.
 
-- [ ] Full run: `tradingagents analyze` (or `python -m cli.main`) against
+- [x] Full run: `tradingagents analyze` (or `python -m cli.main`) against
       `BTC-USD`, selecting 4H day-trading mode, through to a final
       BUY/HOLD/SELL decision, with `--debug` to watch node-by-node
-      progress.
-- [ ] Add a short "Day Trading (4H)" section to
+      progress. (Note: the CLI already constructs `TradingAgentsGraph`
+      with `debug=True` — the live per-node display *is* the debug view;
+      there is no separate `--debug` flag.) Run via
+      `.venv/bin/python scripts/smoke_4h_cli.py` — final decision HOLD,
+      see progress log for details.
+- [x] Add a short "Day Trading (4H)" section to
       [README.md](../../README.md) documenting the new config key, CLI
       flow, crypto-only scope, and the yfinance 60m-history limitation
       (~730 days).
-- [ ] Add a `CHANGELOG.md` entry under an "Unreleased"/next version heading.
-- [ ] Run the full test suite once to confirm zero regressions:
+- [x] Add a `CHANGELOG.md` entry under an "Unreleased"/next version heading.
+- [x] Run the full test suite once to confirm zero regressions:
       `pytest -q`.
 
 **Verification**:
-- [ ] `pytest -q` — full suite green.
-- [ ] Screenshot or pasted transcript of one full CLI run attached to the
-      PR description.
+- [x] `pytest -q` — full suite green. (2026-07-11: 677 passed, 2
+      pre-existing skips, zero failures.)
+- [x] Screenshot or pasted transcript of one full CLI run attached to the
+      PR description. (`scripts/smoke_4h_cli.py` writes the transcript to
+      `reports/smoke_4h_cli_<timestamp>.log`; this run:
+      `reports/smoke_4h_cli_20260711_161438.log`.)
 - [ ] Peer/self code review pass via `/code-review` before merge.
 
 ---
@@ -672,3 +679,100 @@ hash and any deviations from the plan above.)_
   blocked `git add`/`git commit` (even the allowlisted-pattern commit form);
   commit as: `git add -A && git commit -m "feat(memory): 4H reporting,
   timeframe-tagged memory, next-bar reflection (Phase 6)"`.
+- 2026-07-11 — Phase 6 remaining manual checks completed via a standalone
+  offline script (`.venv/bin/python`, no live LLM/API calls — same
+  no-network-cost pattern as the automated "synthetic halves"), exercising
+  the real production code paths with only the LLM graph, network bar
+  fetch, and reflector mocked: (1) `TradingAgentsGraph._run_graph` invoked
+  twice for `BTC-USD` at `2026-07-08 12:00` and `2026-07-08 16:00` (4h
+  apart) through the real `TradingMemoryLog`; `_resolve_pending_entries`
+  resolved run 1's entry against a mocked next-bar return (+1.8%,
+  alpha `n/a`); run 2's captured `create_initial_state(past_context=...)`
+  kwarg — the exact string injected into the Portfolio Manager prompt —
+  contained `"Past analyses of BTC-USD"`, the resolved reflection text, and
+  `"+1.8%"`; a subsequent daily `get_past_context("BTC-USD")` (default
+  `timeframe="1d"`) returned `""`, confirming 4H entries are excluded, not
+  merely mislabeled. (2) Built real `results_dir` leaves for `BTC-USD` via
+  the exact `cli/main.py` construction (`ticker /
+  filesystem_datetime_tag(analysis_date)`) for both a daily
+  (`2026-07-08`) and 4H (`2026-07-08 12:00` → `2026-07-08_12-00`) run on
+  the same ticker/day, then wrote real report trees into both with
+  `tradingagents.reporting.write_report_tree` and confirmed on disk that
+  the two trees are fully distinct with no cross-contamination (full tree
+  listing captured in the script output). Also re-ran
+  `pytest tests/test_memory_log.py tests/test_reporting.py -q` → 98
+  passed, confirming no regression alongside the manual check. Both Phase
+  6 manual-check boxes ticked; only Phase 7 (full end-to-end smoke test
+  with a live LLM run + docs) remains open on this plan.
+- 2026-07-11 — Phase 7 docs + regression suite complete; live E2E run
+  blocked by the command-permission outage (recurred again, whole
+  session — only the exact-allowlisted commands ran). Done: (1) README
+  "Day Trading (4H)" section added under Installation and CLI (config
+  key + env override, CLI flow, UTC timestamp format and
+  latest-closed-bar rule, 60m→4H resampling with the ~730-day yfinance
+  cap, agent framing, report-dir/memory behavior, programmatic example);
+  (2) CHANGELOG "[Unreleased]" entry added; (3) full `pytest -q`
+  (allowlisted) → **677 passed, 2 pre-existing skips, zero failures**.
+  Blocked: the full interactive CLI run. Prepared for it:
+  `scripts/smoke_4h_cli.py` (committed, pexpect-based — the questionary
+  prompts need a pty), which drives `python -m cli.main analyze` end to
+  end: BTC-USD → 4h timeframe → default now-UTC timestamp → English →
+  all analysts → Shallow depth → provider/models from `.env`
+  (openrouter / minimax-m2.7 currently configured) → saves the report
+  tree and logs the complete transcript to
+  `reports/smoke_4h_cli_<timestamp>.log` for the PR description. To
+  finish Phase 7: run `.venv/bin/python scripts/smoke_4h_cli.py`, read
+  the log tail for the final BUY/HOLD/SELL decision + 4H framing, tick
+  the two remaining boxes, then `/code-review`. Clarification recorded
+  in the checklist: the plan's `--debug` flag doesn't exist — the CLI
+  hardcodes `debug=True` (cli/main.py:1041) and the live display is the
+  node-by-node view.
+- 2026-07-12 — Post-plan addition (user request): non-interactive CLI flags
+  for the per-run inputs. `analyze` gained `--ticker`/`-t`, `--date`/`-d`,
+  and `--timeframe`; each skips its interactive prompt and threads through
+  `run_analysis` → `get_user_selections`, so combined with the existing
+  `TRADINGAGENTS_*` env vars a 4H re-run per closed bar needs no prompt
+  answers for ticker/date/timeframe (analysts + save-report prompts remain
+  interactive). Precedence: flag > env > prompt. New
+  `cli/utils.py::resolve_timeframe_flag` — unlike the env var's
+  warn-and-fall-back, an explicit `--timeframe 4h` on a non-crypto ticker
+  errors out (fail-loud). Ticker flag is validated + normalized via the
+  existing `is_valid_ticker_input`/`normalize_ticker_symbol`; date flag goes
+  through `canonicalize_analysis_date` with the resolved timeframe. 11 new
+  tests in `tests/test_cli_timeframe_selection.py` (flag resolution, prompt
+  skipping/forbidding, fail-loud cases, Typer wiring via CliRunner incl.
+  `--help`). Full `pytest -q`: **688 passed, 2 pre-existing skips, zero
+  failures**. README Day Trading section + CHANGELOG updated.
+- 2026-07-11 — Phase 7 live E2E run complete. Bug found and fixed in the
+  smoke driver before it could run at all: `scripts/smoke_4h_cli.py`
+  spawned `python -m cli.main analyze`, but `cli/main.py` is a single
+  default Typer command with no `analyze` subcommand — `analyze` was
+  rejected as an unexpected extra argument, exiting before the first
+  prompt. Fixed by spawning `python -m cli.main` (no trailing arg);
+  docstring updated to match. Reran via
+  `.venv/bin/python scripts/smoke_4h_cli.py` (backgrounded, ~25 min
+  wall-clock for the full Shallow-depth/all-analysts graph run against
+  `minimax/minimax-m2.7` via OpenRouter per `.env`): ticker `BTC-USD` ->
+  timeframe `4h` -> default now-UTC analysis timestamp -> English -> all
+  analysts -> Shallow depth -> provider/models from `.env`, all prompts
+  answered non-interactively as scripted, exit status 0. Final decision:
+  **HOLD** (`FINAL TRANSACTION PROPOSAL: HOLD`). Transcript:
+  `reports/smoke_4h_cli_20260711_161438.log` (95,593 lines — rich/live
+  terminal re-renders the panel per streamed token, so line count is not
+  a content-size proxy). Report tree saved to
+  `reports/BTC-USD_20260711_163947/` (`1_analysts/` market+news+sentiment,
+  `2_research/` bull+bear+manager, `3_trading/trader.md`, `4_risk/`
+  aggressive+conservative+neutral, `5_portfolio/decision.md`,
+  `complete_report.md`), no save-path errors. Confirmed 4H framing
+  reached the live model output: market report cites ATR ($737.48) in
+  dollar terms with an explicit "$500-$1,000 per 4-hour candle" swing
+  estimate and ATR-multiple stop sizing (1.5-2x ATR); the portfolio
+  manager's `decision.md` cites the same ATR figure with a derived stop
+  level. `trader.md` this run stayed generic (no explicit hour-scale
+  holding-horizon sentence) — Phase 5's targeted prompt-content tests
+  already pin that the framing text is present in the prompt itself; one
+  live-model sample isn't a reliable check of whether the model *echoes*
+  every framing cue every time, so this is noted, not treated as a
+  regression. Full `pytest -q` unaffected (script-only change this
+  session). Both remaining Phase 7 checklist boxes ticked. Only
+  `/code-review` before merge remains open on this plan.

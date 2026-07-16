@@ -224,6 +224,169 @@ def test_parse_trade_datetime_invalid_raises():
         parse_trade_datetime("07/08/2026")
 
 
+# --- command-line flags (--ticker / --date / --timeframe) ---
+
+def test_resolve_timeframe_flag_canonicalizes():
+    assert cli_utils.resolve_timeframe_flag(" 4H ", AssetType.CRYPTO) == "4h"
+
+
+def test_resolve_timeframe_flag_daily_works_for_any_asset():
+    assert cli_utils.resolve_timeframe_flag("1d", AssetType.STOCK) == "1d"
+
+
+def test_resolve_timeframe_flag_4h_on_stock_raises():
+    """An explicit flag that can't be honored is an error, not a silent
+    downgrade to daily (unlike the env var, which warns and continues)."""
+    with pytest.raises(ValueError, match="crypto"):
+        cli_utils.resolve_timeframe_flag("4h", AssetType.STOCK)
+
+
+def test_resolve_timeframe_flag_invalid_value_raises():
+    with pytest.raises(ValueError, match="1d, 4h"):
+        cli_utils.resolve_timeframe_flag("1h", AssetType.CRYPTO)
+
+
+_FLAG_SKIPPABLE_ENV = (
+    "TRADINGAGENTS_TIMEFRAME",
+    "TRADINGAGENTS_OUTPUT_LANGUAGE",
+    "TRADINGAGENTS_MAX_DEBATE_ROUNDS",
+    "TRADINGAGENTS_MAX_RISK_ROUNDS",
+    "TRADINGAGENTS_LLM_PROVIDER",
+    "TRADINGAGENTS_QUICK_THINK_LLM",
+    "TRADINGAGENTS_DEEP_THINK_LLM",
+    "TRADINGAGENTS_OPENAI_REASONING_EFFORT",
+)
+
+
+def _forbid(name):
+    def _fail(*args, **kwargs):
+        raise AssertionError(f"{name} prompt must not run when its flag is set")
+
+    return _fail
+
+
+def test_get_user_selections_honors_cli_flags(monkeypatch):
+    """--ticker/--date/--timeframe skip their prompts and land in selections."""
+    import cli.main as cli_main
+    from cli.models import AnalystType
+
+    for var in _FLAG_SKIPPABLE_ENV:
+        monkeypatch.delenv(var, raising=False)
+
+    monkeypatch.setattr(cli_main, "fetch_announcements", lambda: {})
+    monkeypatch.setattr(cli_main, "get_ticker", _forbid("ticker"))
+    monkeypatch.setattr(cli_main, "select_timeframe", _forbid("timeframe"))
+    monkeypatch.setattr(cli_main, "get_analysis_date", _forbid("date"))
+    monkeypatch.setattr(cli_main, "ask_output_language", lambda: "English")
+    monkeypatch.setattr(
+        cli_main, "select_analysts", lambda asset_type: [AnalystType.MARKET]
+    )
+    monkeypatch.setattr(cli_main, "select_research_depth", lambda: 1)
+    monkeypatch.setattr(
+        cli_main,
+        "select_llm_provider",
+        lambda: ("openai", "https://api.openai.com/v1"),
+    )
+    monkeypatch.setattr(cli_main, "ensure_api_key", lambda provider: None)
+    monkeypatch.setattr(
+        cli_main, "select_shallow_thinking_agent", lambda p: "quick-model"
+    )
+    monkeypatch.setattr(cli_main, "select_deep_thinking_agent", lambda p: "deep-model")
+    monkeypatch.setattr(cli_main, "ask_openai_reasoning_effort", lambda: "medium")
+
+    selections = cli_main.get_user_selections(
+        ticker="btcusd", date="2026-07-08 12:00", timeframe="4H"
+    )
+    # Ticker normalized to the canonical Yahoo symbol; timeframe canonicalized;
+    # timestamp accepted because the 4h flag was applied before date parsing.
+    assert selections["ticker"] == "BTC-USD"
+    assert selections["timeframe"] == "4h"
+    assert selections["analysis_date"] == "2026-07-08 12:00"
+    assert selections["asset_type"] == "crypto"
+
+
+def test_get_user_selections_rejects_4h_flag_on_stock(monkeypatch):
+    import cli.main as cli_main
+
+    monkeypatch.delenv("TRADINGAGENTS_TIMEFRAME", raising=False)
+    monkeypatch.setattr(cli_main, "fetch_announcements", lambda: {})
+    with pytest.raises(SystemExit):
+        cli_main.get_user_selections(ticker="AAPL", timeframe="4h")
+
+
+def test_get_user_selections_rejects_invalid_ticker_flag(monkeypatch):
+    import cli.main as cli_main
+
+    monkeypatch.setattr(cli_main, "fetch_announcements", lambda: {})
+    with pytest.raises(SystemExit):
+        cli_main.get_user_selections(ticker="not a ticker!!")
+
+
+def test_get_user_selections_rejects_timestamp_date_flag_in_daily(monkeypatch):
+    """--date with HH:MM on a daily run is a user error, never truncated."""
+    import cli.main as cli_main
+
+    monkeypatch.delenv("TRADINGAGENTS_TIMEFRAME", raising=False)
+    monkeypatch.setattr(cli_main, "fetch_announcements", lambda: {})
+    with pytest.raises(SystemExit):
+        cli_main.get_user_selections(
+            ticker="AAPL", date="2026-07-08 12:00", timeframe="1d"
+        )
+
+
+def test_analyze_command_threads_flags_to_run_analysis(monkeypatch):
+    from typer.testing import CliRunner
+
+    import cli.main as cli_main
+
+    captured = {}
+    monkeypatch.setattr(
+        cli_main, "run_analysis", lambda **kwargs: captured.update(kwargs)
+    )
+    result = CliRunner().invoke(
+        cli_main.app,
+        ["--ticker", "BTC-USD", "--date", "2026-07-08 12:00", "--timeframe", "4h"],
+    )
+    assert result.exit_code == 0
+    assert captured == {
+        "checkpoint": None,
+        "ticker": "BTC-USD",
+        "date": "2026-07-08 12:00",
+        "timeframe": "4h",
+    }
+
+
+def test_analyze_help_lists_run_parameter_flags():
+    from typer.testing import CliRunner
+
+    import cli.main as cli_main
+
+    result = CliRunner().invoke(cli_main.app, ["--help"])
+    assert result.exit_code == 0
+    for flag in ("--ticker", "--date", "--timeframe"):
+        assert flag in result.output
+
+
+def test_analyze_command_defaults_to_all_prompts(monkeypatch):
+    """No flags -> run_analysis gets Nones and the interactive flow is used."""
+    from typer.testing import CliRunner
+
+    import cli.main as cli_main
+
+    captured = {}
+    monkeypatch.setattr(
+        cli_main, "run_analysis", lambda **kwargs: captured.update(kwargs)
+    )
+    result = CliRunner().invoke(cli_main.app, [])
+    assert result.exit_code == 0
+    assert captured == {
+        "checkpoint": None,
+        "ticker": None,
+        "date": None,
+        "timeframe": None,
+    }
+
+
 # --- selections -> run config wiring ---
 
 def test_build_run_config_threads_timeframe(monkeypatch):

@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Breaking changes within the 0.x line are called out explicitly.
 
+## [Unreleased]
+
+### Added
+
+- **Day-trading mode on 4-hour bars (crypto).** New `timeframe` config key
+  (`"1d"` default, `"4h"` opt-in; `TRADINGAGENTS_TIMEFRAME` env override) and a
+  crypto-only CLI Trading Timeframe prompt. 4H candles are resampled from
+  yfinance 60-minute bars on fixed UTC boundaries; analysis always targets the
+  most recently *closed* bar at or before the requested `YYYY-MM-DD HH:MM`
+  timestamp (never the still-forming bar). Indicators run on 4H bars with
+  bar-count lookbacks, agent prompts shift to an hours-scale holding horizon
+  with 4H-ATR-sized stops, report directories gain the bar time
+  (`BTC-USD/2026-07-08_12-00`), and decision-log entries are tagged
+  `Timeframe: 4h`, scored against the next 4H bar's close (raw return, no
+  alpha benchmark), and filtered by timeframe on injection. Daily behavior is
+  unchanged. Known limits: crypto tickers only, yfinance caps 60m history at
+  ~730 days.
+- **CLI flags for the per-run inputs.** `python -m cli.main` now accepts
+  `--ticker`/`-t`, `--date`/`-d`, and `--timeframe`; each skips its
+  interactive prompt (the remaining steps stay interactive unless their
+  `TRADINGAGENTS_*` env vars are set). `--timeframe` wins over
+  `TRADINGAGENTS_TIMEFRAME` and, unlike the env var's warn-and-fall-back,
+  fails loudly when 4h is requested for a non-crypto ticker.
+
 ## [0.3.1] — 2026-07-05
 
 Correctness and stability patch: data look-ahead, graph-router crash-safety,
