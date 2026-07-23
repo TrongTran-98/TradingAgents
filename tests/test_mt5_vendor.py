@@ -117,10 +117,17 @@ class TestGetMt5RatesRange:
 
         call = next(c for c in fake_mt5.calls if c[0] == "copy_rates_range")
         _symbol, _timeframe, server_from, server_to = call[1]
-        assert server_from == datetime(2026, 1, 1, 3, 0)
-        assert server_to == datetime(2026, 1, 1, 7, 0)
+        assert server_from == datetime(2026, 1, 1, 3, 0, tzinfo=timezone.utc)
+        assert server_to == datetime(2026, 1, 1, 7, 0, tzinfo=timezone.utc)
 
-    def test_accepts_tz_aware_datetimes(self, fake_mt5):
+    def test_passes_tz_aware_utc_datetimes_to_mt5(self, fake_mt5):
+        """``MetaTrader5.copy_rates_range`` silently reinterprets a naive
+        datetime as the host machine's local time before converting it to an
+        epoch -- confirmed against a live terminal to shift the query window
+        by the host's local UTC offset (e.g. 7h stale bars on a UTC+7 host).
+        The values passed here must carry ``tzinfo=timezone.utc`` so the
+        MetaTrader5 package converts them literally, regardless of what
+        timezone the host machine itself is running in."""
         fake_mt5.copy_rates_range_result = _rates((0, 1.0, 1.0, 1.0, 1.0, 1, 0, 0))
         date_from = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
         date_to = datetime(2026, 1, 1, 4, 0, tzinfo=timezone.utc)
@@ -131,8 +138,8 @@ class TestGetMt5RatesRange:
 
         call = next(c for c in fake_mt5.calls if c[0] == "copy_rates_range")
         _symbol, _timeframe, server_from, server_to = call[1]
-        assert server_from == datetime(2026, 1, 1, 0, 0)
-        assert server_to == datetime(2026, 1, 1, 4, 0)
+        assert server_from == datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+        assert server_to == datetime(2026, 1, 1, 4, 0, tzinfo=timezone.utc)
 
     def test_empty_result_raises_no_market_data_error(self, fake_mt5):
         fake_mt5.copy_rates_range_result = _rates()
