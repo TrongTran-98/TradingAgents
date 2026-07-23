@@ -207,6 +207,48 @@ class EntryTrigger(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Phase 6 -- walk-forward outcome resolution
+# ---------------------------------------------------------------------------
+
+
+class SignalOutcome(BaseModel):
+    """Walk-forward resolution of one ScalpSignal's entry against later bars.
+
+    Starts ``pending`` at signal-creation time (before any forward bars can
+    exist) and is only ever moved forward by ``scalp_journal.resolve_outcome``,
+    never re-opened. ``timeout`` means the full ``max_holding_bars_5m``
+    window was scanned with no SL/TP hit (excluded from win/loss stats, kept
+    visible in the journal); ``pending`` means not enough bars exist yet and
+    the same signal is retried by a later run (same deferred-resolution
+    idiom as ``TradingAgentsGraph._resolve_pending_entries``).
+    """
+
+    status: Literal["pending", "win", "loss", "timeout"] = "pending"
+    exit_price: float | None = Field(
+        default=None,
+        description="Price at which SL or TP1 was hit; null while pending/timeout.",
+    )
+    exit_bar_time_utc: datetime | None = Field(
+        default=None, description="UTC time of the bar that resolved this outcome."
+    )
+    bars_held: int | None = Field(
+        default=None, description="Number of forward 5m bars scanned before resolution."
+    )
+    gap_through: bool = Field(
+        default=False,
+        description=(
+            "True when the resolving bar arrived after an unusually large "
+            "time gap (weekend/holiday reopen already past the level), "
+            "False for an ordinary intrabar SL/TP touch -- lets weekly "
+            "review separate 'bad read' losses from unavoidable gap losses."
+        ),
+    )
+    resolved_at_utc: datetime | None = Field(
+        default=None, description="When this outcome was computed; null while still pending."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Top-level artifact
 # ---------------------------------------------------------------------------
 
@@ -220,6 +262,7 @@ class ScalpSignal(BaseModel):
     htf_bias: HTFBias
     ltf_structure: LTFStructure
     entry_trigger: EntryTrigger
+    outcome: SignalOutcome = Field(default_factory=SignalOutcome)
 
 
 # ---------------------------------------------------------------------------

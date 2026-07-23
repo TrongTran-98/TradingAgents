@@ -15,7 +15,7 @@ Status values: `todo` · `in-progress` · `blocked` · `done`
 | 3 | Schemas & state | `agents/utils/scalp_schemas.py`, `agents/utils/scalp_state.py` | done |
 | 4 | Analysts & pipeline | `agents/utils/scalp_tools.py`, `agents/analysts/scalp/*`, `graph/scalp_pipeline.py` | done |
 | 5 | Journal write path | `dataflows/scalp_journal.py` | done |
-| 6 | Walk-forward resolver | `dataflows/scalp_journal.py` (resolver) | todo |
+| 6 | Walk-forward resolver | `dataflows/scalp_journal.py` (resolver) | done |
 | 7 | Weekly reflection | `graph/scalp_reflection.py` | todo |
 | 8 | CLI | `cli/scalp.py` | todo |
 
@@ -250,27 +250,44 @@ verified via `read_signals()` round-tripping a full `ScalpSignal` (nested `HTFBi
 
 ## Phase 6 — Walk-forward outcome resolver
 
-- [ ] `scalp_journal.resolve_outcome(signal)` — fetch 5m bars forward from
+- [x] `scalp_journal.resolve_outcome(signal)` — fetch 5m bars forward from
       `generated_at_utc` via `mt5_vendor.get_mt5_rates_range`, up to `max_holding_bars_5m`
-      (default 48).
-- [ ] Bar-by-bar scan, first-touch wins: long → SL if `low <= stop_loss`, TP if
-      `high >= take_profit_1`; short mirrored.
-- [ ] Same-bar both-hit → resolve conservatively as SL hit.
-- [ ] Distinguish `gap_through` (weekend-gap reopen) from an ordinary intrabar spike when
-      tagging a same-bar SL hit.
-- [ ] No SL/TP hit within window → `timeout` (excluded from win/loss stats, kept visible in
-      journal).
-- [ ] No bars available yet → `pending`, retried on a later run (deferred-resolution idiom
-      matching `TradingAgentsGraph._resolve_pending_entries`).
+      (default 48). Accepts an optional `bars` override so tests (and, later, the CLI) can
+      supply an already-fetched frame instead of hitting MT5 again.
+- [x] Bar-by-bar scan, first-touch wins: long → SL if `low <= stop_loss`, TP if
+      `high >= take_profit_1`; short mirrored (`_scan_bars`; direction inferred from
+      `take_profit_1 > entry_price`).
+- [x] Same-bar both-hit → resolve conservatively as SL hit.
+- [x] Distinguish `gap_through` (weekend-gap reopen) from an ordinary intrabar spike when
+      tagging a same-bar SL hit — time gap vs. the previous scanned bar (or `generated_at_utc`
+      for the first bar) ≥ 60 minutes tags `gap_through=True`.
+- [x] No SL/TP hit within window → `timeout` (excluded from win/loss stats, kept visible in
+      journal) — triggered once `max_holding_bars_5m` bars have been scanned, or once
+      wall-clock `now` has passed the holding window even with fewer bars (thin
+      weekend/holiday history).
+- [x] No bars available yet → `pending`, retried on a later run (deferred-resolution idiom
+      matching `TradingAgentsGraph._resolve_pending_entries`) — covers both an empty/partial
+      `bars` frame before the window has elapsed and a real `NoMarketDataError` from
+      `get_mt5_rates_range`.
+- [x] `ScalpJournal.update_outcome(signal_id, outcome)` — atomic read-modify-write rewrite of
+      one record's `outcome` field in place (same idiom as `TradingMemoryLog.update_with_outcome`),
+      plus `ScalpJournal.pending_signals()` (triggered + `outcome.status == "pending"`) as the
+      thin read path Phase 8's `review` command will iterate over.
+- [x] Added a `SignalOutcome` schema (`scalp_schemas.py`) and an `outcome: SignalOutcome` field
+      (default `pending`) on `ScalpSignal`, so every journaled signal carries its resolution
+      state directly instead of a side table.
 
-**Tests** (`tests/test_scalp_walkforward.py`):
-- [ ] Synthetic bar sequences covering: clean SL hit, clean TP hit, same-bar both-hit,
+**Tests** (`tests/test_scalp_walkforward.py`, 20 tests):
+- [x] Synthetic bar sequences covering: clean SL hit, clean TP hit, same-bar both-hit,
       gap-through same-bar hit, timeout, pending/no-bars-yet.
-- [ ] Long and short mirrored cases for each scenario above.
+- [x] Long and short mirrored cases for each scenario above.
+- [x] `resolve_outcome` contract guards (raises on an untriggered signal or missing
+      entry/stop/TP1 prices) and `ScalpJournal.update_outcome`/`pending_signals` coverage.
 
-**Definition of done**: `pytest tests/test_scalp_walkforward.py -v` passes covering every edge
-case listed; a manual run resolves real previously-journaled signals against live MT5 history
-without error.
+**Definition of done**: `pytest tests/test_scalp_walkforward.py -v` passes (20/20) covering every
+edge case listed. **Outstanding**: the manual run resolving real previously-journaled signals
+against live MT5 history hasn't been done in this environment (no live terminal available) — do
+this before relying on Phase 6 in production.
 
 ---
 
