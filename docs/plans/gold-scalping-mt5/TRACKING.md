@@ -14,7 +14,7 @@ Status values: `todo` · `in-progress` · `blocked` · `done`
 | 2 | MT5 integration | `dataflows/mt5_session.py`, `dataflows/mt5_vendor.py` | in-progress |
 | 3 | Schemas & state | `agents/utils/scalp_schemas.py`, `agents/utils/scalp_state.py` | done |
 | 4 | Analysts & pipeline | `agents/utils/scalp_tools.py`, `agents/analysts/scalp/*`, `graph/scalp_pipeline.py` | done |
-| 5 | Journal write path | `dataflows/scalp_journal.py` | todo |
+| 5 | Journal write path | `dataflows/scalp_journal.py` | done |
 | 6 | Walk-forward resolver | `dataflows/scalp_journal.py` (resolver) | todo |
 | 7 | Weekly reflection | `graph/scalp_reflection.py` | todo |
 | 8 | CLI | `cli/scalp.py` | todo |
@@ -220,19 +220,31 @@ here); `test_scalp_pipeline_e2e.py`'s scripted-LLM run is the automated substitu
 
 ## Phase 5 — Journal write path (`scalp_journal.py`)
 
-- [ ] `ScalpJournal` — JSONL-backed, append-only writer for `ScalpSignal` records.
-- [ ] Atomic writes: temp-file + `os.replace()`, copied exactly from `memory.py`'s
-      `TradingMemoryLog` pattern.
-- [ ] Idempotent append (same `signal_id` written twice does not duplicate).
-- [ ] Journal path resolution from `config["scalping"]["journal_path"]` (expand `~`).
+- [x] `ScalpJournal` — JSONL-backed, append-only writer for `ScalpSignal` records.
+- [x] Atomic writes: temp-file + `os.replace()`, copied from `memory.py`'s `TradingMemoryLog`
+      pattern. Deviation: each write uses a uniquely-named tmp file (`.{uuid4}.tmp`, not a fixed
+      `.tmp` suffix) plus an in-process `threading.Lock` around read-modify-write, since a fixed
+      tmp name and no lock let two threads' `os.replace()` calls race into a Windows
+      `PermissionError` (reproduced by the concurrent-write smoke test below). Does not protect
+      against a second OS *process* writing concurrently — same gap `TradingMemoryLog` already
+      has.
+- [x] Idempotent append (same `signal_id` written twice does not duplicate) — checked by
+      reading all existing records before writing.
+- [x] Journal path resolution from `config["scalping"]["journal_path"]` (expand `~`).
+- [x] `read_signals()` — parses the JSONL back into `ScalpSignal` instances (not in the original
+      checklist, but needed for idempotency's own read-back and as the read path Phase 6/7 will
+      build on).
 
-**Tests** (`tests/test_scalp_journal.py`):
-- [ ] Write path produces valid JSONL, one record per line.
-- [ ] Idempotency check.
-- [ ] Concurrent-write-safety smoke test (atomic replace behavior).
+**Tests** (`tests/test_scalp_journal.py`, 13 tests):
+- [x] Write path produces valid JSONL, one record per line.
+- [x] Idempotency check (including same-ID-different-content — first write wins).
+- [x] Concurrent-write-safety smoke test (`threading`-based, 20 concurrent appends): asserts no
+      corrupt lines and no duplicate `signal_id`s land on disk.
 
-**Definition of done**: `pytest tests/test_scalp_journal.py -v` passes; a Phase-4 pipeline run
-piped into `ScalpJournal.append()` produces a readable, re-parseable JSONL file.
+**Definition of done**: `pytest tests/test_scalp_journal.py -v` passes (13/13); a Phase-4
+pipeline run piped into `ScalpJournal.append()` produces a readable, re-parseable JSONL file —
+verified via `read_signals()` round-tripping a full `ScalpSignal` (nested `HTFBias`/
+`LTFStructure`/`EntryTrigger`/`KeyZone`) losslessly.
 
 ---
 
