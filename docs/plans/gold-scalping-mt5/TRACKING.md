@@ -16,7 +16,7 @@ Status values: `todo` · `in-progress` · `blocked` · `done`
 | 4 | Analysts & pipeline | `agents/utils/scalp_tools.py`, `agents/analysts/scalp/*`, `graph/scalp_pipeline.py` | done |
 | 5 | Journal write path | `dataflows/scalp_journal.py` | done |
 | 6 | Walk-forward resolver | `dataflows/scalp_journal.py` (resolver) | done |
-| 7 | Weekly reflection | `graph/scalp_reflection.py` | todo |
+| 7 | Weekly reflection | `graph/scalp_reflection.py` | done |
 | 8 | CLI | `cli/scalp.py` | todo |
 
 ---
@@ -296,32 +296,50 @@ this before relying on Phase 6 in production.
 Guardrails against overfitting/hallucination are the point of this phase — implement the
 Python-side checks *before* wiring the LLM call, not after.
 
-- [ ] Python bucketing of resolved losing/timeout signals by fixed categorical keys
-      (setup_type, session, HTF/LTF agreement), counted **before** any LLM call.
-- [ ] Sample-size gate: only buckets with `occurrences >= min_lesson_sample_size` (default 3)
-      become candidate lesson material.
-- [ ] LLM input restricted to structured journal fields only (never free-text reports, never
-      re-fetched data).
-- [ ] `ScalpReflector.weekly_review()` calls the LLM via `bind_structured` to produce
+- [x] Python bucketing of resolved losing/timeout signals by fixed categorical keys
+      (setup_type, session, HTF/LTF agreement), counted **before** any LLM call
+      (`bucket_resolved_signals`/`_bucket_key`). Untriggered signals and non-loss/timeout
+      outcomes are excluded before bucketing even starts.
+- [x] Sample-size gate: only buckets with `occurrences >= min_lesson_sample_size` (default 3)
+      become candidate lesson material (`_candidate_buckets`) — below-threshold buckets never
+      reach the LLM call at all (verified by an exploding-LLM test).
+- [x] LLM input restricted to structured journal fields only (never free-text reports, never
+      re-fetched data) — `_build_review_messages` feeds only `signal_id`/`outcome.status`/
+      `gap_through`/rationale strings already sitting in the journal record.
+- [x] `ScalpReflector.weekly_review()` calls the LLM via `bind_structured` to produce
       `WeeklyReviewResult`, each `Lesson` citing `supporting_signal_ids` + `occurrences`.
-- [ ] **Post-LLM Python validation**: drop any `Lesson` whose `supporting_signal_ids` aren't
+- [x] **Post-LLM Python validation**: drop any `Lesson` whose `supporting_signal_ids` aren't
       all real IDs from that bucket, or whose `occurrences` doesn't match the Python-computed
-      count; log a warning on drop.
-- [ ] Rotation: `scalp_lessons.md`/`.jsonl` capped at `max_active_lessons` (default 10, oldest
-      dropped first — same idiom as `memory_log_max_entries`).
-- [ ] Wire active-lesson injection into each analyst's prompt at pipeline start (completes the
-      Phase 4 seam), the same way `past_context` is injected into `AgentState` today.
+      count; log a warning on drop (`_validate_lessons`). Also drops lessons citing an unknown
+      `bucket_key` or an empty `supporting_signal_ids` list.
+- [x] Rotation: `scalp_lessons.md`/`.jsonl` capped at `max_active_lessons` (default 10, oldest
+      dropped first — same idiom as `memory_log_max_entries`) via `ScalpLessonStore`. The
+      `.jsonl` path is derived from the configured `lessons_path` (`.md` -> `.jsonl`, same
+      suffix-swap idiom `scalp_journal.py` uses for its own tmp files); `.md` is a rendered
+      mirror of the same records, both written atomically (temp-file + `os.replace()`,
+      unique-per-call tmp names, in-process lock — mirrors `ScalpJournal`).
+- [x] Wire active-lesson injection into each analyst's prompt at pipeline start (completes the
+      Phase 4 seam): `load_active_lessons(config)` renders the persisted lesson store into the
+      same bullet-list text block each analyst already injects
+      (`ScalpPipeline.run(..., active_lessons=load_active_lessons(config))` is the call site;
+      wired for real by Phase 8's CLI). Empty string when no lessons are active yet, which each
+      analyst already treats as "omit the lessons block."
 
-**Tests** (`tests/test_scalp_reflection.py`, synthetic journal fixtures, independent of real
-accumulated volume):
-- [ ] Sample-size gate rejects buckets below threshold.
-- [ ] Citation validation drops lessons with fabricated/mismatched `supporting_signal_ids`.
-- [ ] Citation validation drops lessons with mismatched `occurrences` counts.
-- [ ] Rotation drops oldest lessons once `max_active_lessons` is exceeded.
+**Tests** (`tests/test_scalp_reflection.py`, 17 tests, synthetic journal fixtures, independent
+of real accumulated volume):
+- [x] Sample-size gate rejects buckets below threshold (and never invokes the LLM at all).
+- [x] Citation validation drops lessons with fabricated/mismatched `supporting_signal_ids`
+      (including an unknown `bucket_key` and an empty citation list).
+- [x] Citation validation drops lessons with mismatched `occurrences` counts.
+- [x] Rotation drops oldest lessons once `max_active_lessons` is exceeded.
+- [x] `ScalpLessonStore` atomic-write coverage (jsonl + markdown both written, no leftover tmp
+      files, no-lessons-path no-op) and `load_active_lessons` rendering.
 
-**Definition of done**: `pytest tests/test_scalp_reflection.py -v` passes; after a few days of
-accumulated real signals, `tradingagents scalp review` produces a `scalp_lessons.md` containing
-only lessons backed by ≥3 real occurrences with valid `supporting_signal_ids`.
+**Definition of done**: `pytest tests/test_scalp_reflection.py -v` passes (17/17). **Outstanding**:
+the "after a few days of accumulated real signals, `tradingagents scalp review` produces a
+`scalp_lessons.md`..." end-to-end check needs both a live MT5 terminal (Phase 2's outstanding
+item) and Phase 8's CLI wiring — not available in this environment; the synthetic-fixture tests
+above are the automated substitute and all pass.
 
 ---
 
