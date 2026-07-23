@@ -11,7 +11,7 @@ Status values: `todo` · `in-progress` · `blocked` · `done`
 |---|-------|-----------|--------|
 | 0 | Scaffolding | `default_config.py`, `pyproject.toml` | done |
 | 1 | Deterministic features | `dataflows/scalp_features.py` | done |
-| 2 | MT5 integration | `dataflows/mt5_session.py`, `dataflows/mt5_vendor.py` | todo |
+| 2 | MT5 integration | `dataflows/mt5_session.py`, `dataflows/mt5_vendor.py` | in-progress |
 | 3 | Schemas & state | `agents/utils/scalp_schemas.py`, `agents/utils/scalp_state.py` | todo |
 | 4 | Analysts & pipeline | `agents/utils/scalp_tools.py`, `agents/analysts/scalp/*`, `graph/scalp_pipeline.py` | todo |
 | 5 | Journal write path | `dataflows/scalp_journal.py` | todo |
@@ -90,28 +90,30 @@ pure function of a DataFrame/params (no I/O, no LLM calls).
 
 Only phase that needs a real Windows MT5 terminal to fully verify — automated tests use mocks.
 
-- [ ] `mt5_session.py`: connect/init/shutdown lifecycle, lazy `import MetaTrader5` (not at
+- [x] `mt5_session.py`: connect/init/shutdown lifecycle, lazy `import MetaTrader5` (not at
       package `__init__`, matching `llm_clients/factory.py`'s lazy provider-SDK imports).
-- [ ] `mt5_vendor.py`: `get_mt5_rates(symbol, timeframe, count)` wrapping `copy_rates_from_pos`
+- [x] `mt5_vendor.py`: `get_mt5_rates(symbol, timeframe, count)` wrapping `copy_rates_from_pos`
       → OHLCV DataFrame.
-- [ ] `mt5_vendor.py`: `get_mt5_rates_range(symbol, timeframe, date_from, date_to)` wrapping
+- [x] `mt5_vendor.py`: `get_mt5_rates_range(symbol, timeframe, date_from, date_to)` wrapping
       `copy_rates_range`, used by the walk-forward resolver.
-- [ ] Raise `NoMarketDataError` / `VendorNotConfiguredError` (from
+- [x] Raise `NoMarketDataError` / `VendorNotConfiguredError` (from
       `tradingagents/dataflows/errors.py`) on terminal-not-running / symbol-not-in-Market-Watch
       / empty-result cases — reuse the existing typed-error taxonomy, don't invent new
       exception types.
-- [ ] Explicitly do **not** register these in `interface.py`'s `VENDOR_METHODS`/
+- [x] Explicitly do **not** register these in `interface.py`'s `VENDOR_METHODS`/
       `route_to_vendor` — called directly by `scalp_tools.py` instead. Note this as an
       intentional deviation, not an oversight, in code comments/PR description.
-- [ ] Document the **broker-server-time gotcha**: `copy_rates_*` returns bars in broker server
+- [x] Document the **broker-server-time gotcha**: `copy_rates_*` returns bars in broker server
       time, not UTC. Apply `mt5_server_utc_offset_hours` correction before any UTC-based
       session classification (Step 2) runs.
 
 **Tests**:
-- [ ] Mocked unit tests (no real terminal) for DataFrame shape/column normalization and error
-      mapping.
+- [x] Mocked unit tests (no real terminal) for DataFrame shape/column normalization and error
+      mapping. (`tests/test_mt5_session.py`, `tests/test_mt5_vendor.py`, 21 tests.)
 - [ ] Manual verification against real local MT5 terminal (Windows, terminal running, `XAUUSD`
       in Market Watch) — resolve the actual UTC offset for the user's broker and record it.
+      **Outstanding**: needs a live MT5 terminal + broker login, not available in this
+      environment — do this before relying on Phase 2 in production.
 
 **Definition of done**: mocked tests pass in CI; manual run against a live terminal returns
 correctly-shaped OHLCV for 4H/1H/15m/5m and the correct broker UTC offset is confirmed against
