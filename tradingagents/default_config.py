@@ -161,4 +161,36 @@ DEFAULT_CONFIG = _apply_env_overrides({
         ".SZ":  "399001.SZ",   # Shenzhen (SZSE Component)
         "":     "SPY",         # default for US-listed tickers (no suffix)
     },
+    # Standalone MT5 gold-scalping pipeline (docs/plans/gold-scalping-mt5/PLAN.md).
+    # Fully additive: nothing in TradingAgentsGraph or the daily-equity
+    # AssetType/AnalystType enums reads this block.
+    "scalping": {
+        "symbol": "XAUUSD",
+        # MT5's copy_rates_* returns bars in broker *server* time, not UTC.
+        # Session-window classification is meaningless unless this offset is
+        # set correctly for the user's actual broker (verified in Phase 2).
+        "mt5_server_utc_offset_hours": 0,
+        "timeframes": {"htf": ["4H", "1H"], "ltf": "15m", "entry": "5m"},
+        # SL placement: structural invalidation point + a small ATR(5m) buffer
+        # to avoid wick-outs.
+        "sl_atr_buffer_min": 0.10,
+        "sl_atr_buffer_max": 0.25,
+        # Reject setups whose structural SL distance exceeds this many ATR(5m)
+        # instead of force-fitting a wide stop.
+        "max_sl_atr_multiple": 2.0,
+        "min_risk_reward": 1.5,
+        # BOS/CHoCH displacement threshold (close-based), in ATR(15m) units.
+        "min_displacement_atr": 0.25,
+        # Gold-relevant liquidity windows, [start_hour, end_hour) in UTC.
+        "sessions_utc": {"london": [7, 16], "ny": [12, 21]},
+        # Walk-forward outcome window: 48 x 5m bars = 4 hours.
+        "max_holding_bars_5m": 48,
+        "journal_path": os.path.join(_TRADINGAGENTS_HOME, "scalp", "scalp_journal.jsonl"),
+        "lessons_path": os.path.join(_TRADINGAGENTS_HOME, "scalp", "scalp_lessons.md"),
+        # Weekly-review overfitting guard: a bucket needs at least this many
+        # occurrences before it can become a lesson.
+        "min_lesson_sample_size": 3,
+        "max_active_lessons": 10,
+        "use_pivot_points": True,
+    },
 })
