@@ -11,13 +11,13 @@ Status values: `todo` · `in-progress` · `blocked` · `done`
 |---|-------|-----------|--------|
 | 0 | Scaffolding | `default_config.py`, `pyproject.toml` | done |
 | 1 | Deterministic features | `dataflows/scalp_features.py` | done |
-| 2 | MT5 integration | `dataflows/mt5_session.py`, `dataflows/mt5_vendor.py` | in-progress |
+| 2 | MT5 integration | `dataflows/mt5_session.py`, `dataflows/mt5_vendor.py` | done |
 | 3 | Schemas & state | `agents/utils/scalp_schemas.py`, `agents/utils/scalp_state.py` | done |
 | 4 | Analysts & pipeline | `agents/utils/scalp_tools.py`, `agents/analysts/scalp/*`, `graph/scalp_pipeline.py` | done |
 | 5 | Journal write path | `dataflows/scalp_journal.py` | done |
 | 6 | Walk-forward resolver | `dataflows/scalp_journal.py` (resolver) | done |
 | 7 | Weekly reflection | `graph/scalp_reflection.py` | done |
-| 8 | CLI | `cli/scalp.py` | todo |
+| 8 | CLI | `cli/scalp.py` | done |
 
 ---
 
@@ -110,14 +110,22 @@ Only phase that needs a real Windows MT5 terminal to fully verify — automated 
 **Tests**:
 - [x] Mocked unit tests (no real terminal) for DataFrame shape/column normalization and error
       mapping. (`tests/test_mt5_session.py`, `tests/test_mt5_vendor.py`, 21 tests.)
-- [ ] Manual verification against real local MT5 terminal (Windows, terminal running, `XAUUSD`
+- [x] Manual verification against real local MT5 terminal (Windows, terminal running, `XAUUSD`
       in Market Watch) — resolve the actual UTC offset for the user's broker and record it.
-      **Outstanding**: needs a live MT5 terminal + broker login, not available in this
-      environment — do this before relying on Phase 2 in production.
+      **Done** (Phase 8 manual verification, 2026-07-23): this account's broker (Vantage
+      Markets, "VantageMarkets-Live 11" server) lists gold as `XAUUSD.sc`, not the bare
+      `XAUUSD` config default — confirmed via `mt5.symbols_get()`. Server clock is **UTC+3**,
+      confirmed via `symbol_info_tick().time` vs `datetime.now(timezone.utc)`; recorded in
+      `default_config.py`'s `scalping.mt5_server_utc_offset_hours` (was `0`, a placeholder — no
+      broker had been verified yet). Also found and fixed a real wiring gap while doing this:
+      nothing upstream of the CLI ever called `mt5_session.connect()`, so every real MT5 fetch
+      failed with `VendorNotConfiguredError` until `cli/scalp.py` was written to open an
+      `mt5_session.session()` around the pipeline/resolver calls (Phase 8's job as the final
+      wiring layer).
 
 **Definition of done**: mocked tests pass in CI; manual run against a live terminal returns
 correctly-shaped OHLCV for 4H/1H/15m/5m and the correct broker UTC offset is confirmed against
-known London/NY session hours.
+known London/NY session hours. **Met** — see the manual-verification note above.
 
 ---
 
@@ -204,17 +212,31 @@ the "LLM proposes, Python verifies" pattern used elsewhere in the design.
 - [x] `tests/test_scalp_pipeline_e2e.py` — full `ScalpPipeline.run()` against a scripted fake LLM
       and mocked MT5 bars: exercises the two-pass tool-call/structured node logic, message
       clearing between stages, the tradeable gate, and confirms the pipeline overwrites a
-      deliberately-wrong `agrees_with_htf`/`passed_min_rr` claim from the (fake) LLM. Stands in
-      for TRACKING's original "debug streaming against historical `as_of_utc`" ask, since that
-      needs a real LLM provider.
+      deliberately-wrong `agrees_with_htf`/`passed_min_rr` claim from the (fake) LLM. Also covers
+      (added during Phase 8's real-provider verification) a structured-output call that returns
+      `None` once or repeatedly, exercising `invoke_structured_with_fallback`'s retry-then-safe-
+      default path.
 
 **Definition of done**: `tests/test_scalp_toolnode.py` passes; a manual end-to-end run against
 a historical timestamp produces a `ScalpSignal` with internally consistent
 bias→structure→entry reasoning, and a deliberately-bad LLM R:R claim is caught and flagged by
 the Python verification step (test this by temporarily forcing a bad LLM output or a unit test
-on the verification function in isolation). **Outstanding**: the manual run against a real LLM
-provider + historical timestamps hasn't been done in this environment (no live provider call
-here); `test_scalp_pipeline_e2e.py`'s scripted-LLM run is the automated substitute and passes.
+on the verification function in isolation). **Met** (Phase 8 manual verification, 2026-07-23):
+ran the full pipeline against a real local Ollama `qwen3:8b` model and the live MT5 terminal
+(`tradingagents scalp run --symbol XAUUSD.sc --llm-provider ollama --llm-model qwen3:8b`) —
+produced an internally consistent `ScalpSignal` (Step 1 "range/low-confidence" bias from
+genuinely conflicting 4H/1H reads → Step 2 correctly gated `tradeable=False` on HTF/LTF
+disagreement → Step 3+4 correctly skipped rather than forcing an entry). This run also
+surfaced a real robustness gap: on longer, reasoning-heavy prompts (the Step 3 entry-trigger
+call in particular), qwen3:8b sometimes answers in free-form prose instead of the forced
+structured-output tool call — even with `tool_choice` forced — leaving
+`with_structured_output(...).invoke()` returning `None` and crashing the analyst node's
+`render_*(None)` call. Fixed by adding `invoke_structured_with_fallback` (in
+`tradingagents/agents/utils/structured.py`) to all three scalp analysts: retries once, then
+falls back to a conservative, schema-valid "no signal" default (`bias="range"` /
+`tradeable=False` / `triggered=False` as appropriate) instead of crashing or fabricating a
+directional call — covered by new tests in `tests/test_structured_agents.py` and
+`tests/test_scalp_pipeline_e2e.py`.
 
 ---
 
@@ -335,11 +357,15 @@ of real accumulated volume):
 - [x] `ScalpLessonStore` atomic-write coverage (jsonl + markdown both written, no leftover tmp
       files, no-lessons-path no-op) and `load_active_lessons` rendering.
 
-**Definition of done**: `pytest tests/test_scalp_reflection.py -v` passes (17/17). **Outstanding**:
-the "after a few days of accumulated real signals, `tradingagents scalp review` produces a
-`scalp_lessons.md`..." end-to-end check needs both a live MT5 terminal (Phase 2's outstanding
-item) and Phase 8's CLI wiring — not available in this environment; the synthetic-fixture tests
-above are the automated substitute and all pass.
+**Definition of done**: `pytest tests/test_scalp_reflection.py -v` passes (17/17). The
+end-to-end "`tradingagents scalp review` produces a `scalp_lessons.md`" check needed Phase 8's
+CLI wiring, now done (see below) — verified with `scalp review` against a zero-pending,
+zero-candidate-bucket journal (this account's first real run produced an untriggered signal,
+so there was nothing to resolve/bucket yet); the CLI printed a clean "no new lessons" result
+and the correct `scalp_lessons.md` path without crashing. **Still outstanding**: exercising the
+non-empty-bucket path (≥3 real losing/timeout signals, real `ScalpReflector.weekly_review`
+LLM call) needs a few days of accumulated real signals — re-run `scalp review` once that
+volume exists and spot-check the hallucination guard (see cross-cutting checklist).
 
 ---
 
@@ -347,28 +373,50 @@ above are the automated substitute and all pass.
 
 Wired last, once everything underneath it is verified independently.
 
-- [ ] `tradingagents scalp run [--symbol XAUUSD]` — runs `ScalpPipeline` once, prints the
-      resulting `ScalpSignal`, appends to journal.
-- [ ] `tradingagents scalp review` — runs `resolve_outcome` over pending journal entries, then
+- [x] `tradingagents scalp run [--symbol XAUUSD]` — runs `ScalpPipeline` once, prints the
+      resulting `ScalpSignal`, appends to journal. Also accepts `--llm-provider`/`--llm-model`/
+      `--backend-url` overrides (not in the original checklist, but needed to point at a local
+      Ollama model without touching global config/env).
+- [x] `tradingagents scalp review` — runs `resolve_outcome` over pending journal entries, then
       `ScalpReflector.weekly_review()`, writes `scalp_lessons.md`.
-- [ ] Thin command group only — no business logic duplicated here; delegates to
-      `ScalpPipeline`/`ScalpJournal`/`ScalpReflector`.
+- [x] Thin command group only — no business logic duplicated here; delegates to
+      `ScalpPipeline`/`ScalpJournal`/`ScalpReflector`. One addition beyond pure delegation: this
+      is also the first (and only) place that calls `mt5_session.session()` around the MT5-
+      touching calls — nothing upstream of the CLI ever opened an MT5 session, so every real
+      fetch failed until this was wired in here, which is exactly this phase's job as the final
+      integration layer.
+- [x] `tests/test_scalp_cli.py` (5 tests, `typer.testing.CliRunner`) — mocks
+      `create_llm_client`/`ScalpPipeline`/`ScalpJournal`/`resolve_outcome`/`ScalpReflector`/
+      `mt5_session.session` so these run with no MT5 terminal and no real LLM: `run`'s happy
+      path and CLI-option overrides, a clean error message (not a traceback) on `VendorError`,
+      and `review`'s pending-signal resolution + empty-lessons path.
 
 **Definition of done**: manual run against a real local MT5 terminal (Windows, terminal
 running, `XAUUSD` in Market Watch) — `tradingagents scalp run --symbol XAUUSD` prints a sane
-bias/structure/entry chain end to end.
+bias/structure/entry chain end to end. **Met** (2026-07-23): ran
+`tradingagents scalp run --symbol XAUUSD.sc --llm-provider ollama --llm-model qwen3:8b`
+against this account's live-connected MT5 terminal (Vantage Markets; note the account is a
+**live real-money account**, not a demo — every call this pipeline makes is read-only
+`copy_rates_*` market data, never `order_send`/order placement) and local Ollama. Produced an
+internally consistent signal end to end, then `tradingagents scalp review` ran cleanly against
+the resulting journal. This surfaced and fixed two real gaps beyond the CLI file itself (see
+Phase 2 and Phase 4 notes above): the missing `mt5_session.connect()` wiring, and qwen3:8b's
+occasional structured-output misses on reasoning-heavy prompts.
 
 ---
 
 ## Cross-cutting acceptance checklist (run once all phases are done)
 
-- [ ] `pytest tests/test_scalp_features.py tests/test_scalp_walkforward.py tests/test_scalp_journal.py tests/test_scalp_reflection.py -v`
+- [x] `pytest tests/test_scalp_features.py tests/test_scalp_walkforward.py tests/test_scalp_journal.py tests/test_scalp_reflection.py -v`
       passes in CI (pure logic, no external deps).
-- [ ] `tests/test_scalp_toolnode.py` passes.
-- [ ] No changes made to `TradingAgentsGraph`, the daily-equity `AssetType`/`AnalystType`
-      enums, or the debate/risk/execution stages — confirm with `git diff` scoped to those
-      files before merging.
-- [ ] `mt5_server_utc_offset_hours` verified against the user's actual broker and confirmed
-      correct for London/NY session classification.
+- [x] `tests/test_scalp_toolnode.py` passes.
+- [x] No changes made to `TradingAgentsGraph`, the daily-equity `AssetType`/`AnalystType`
+      enums, or the debate/risk/execution stages — confirmed via `git diff`: this work only
+      touched `cli/scalp.py` (new), `cli/main.py` (added `app.add_typer`), `default_config.py`
+      (the `mt5_server_utc_offset_hours` value), the 3 scalp analyst files + `structured.py`
+      (the None-fallback fix), and their tests.
+- [x] `mt5_server_utc_offset_hours` verified against the user's actual broker and confirmed
+      correct for London/NY session classification — `3` for this account's Vantage Markets
+      "VantageMarkets-Live 11" server (see Phase 2 note above).
 - [ ] `tradingagents scalp review` output spot-checked for hallucination-guard compliance
       (every lesson has ≥3 occurrences and real signal IDs).

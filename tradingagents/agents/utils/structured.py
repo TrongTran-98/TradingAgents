@@ -46,6 +46,47 @@ def bind_structured(llm: Any, schema: type[T], agent_name: str) -> Any | None:
         return None
 
 
+def invoke_structured_with_fallback(
+    structured_llm: Any,
+    prompt: Any,
+    fallback: T,
+    agent_name: str,
+    attempts: int = 2,
+) -> T:
+    """Invoke a bound structured LLM, retrying once, then falling back to a safe typed default.
+
+    Unlike ``invoke_structured_or_freetext`` (used by agents whose downstream
+    consumer only needs rendered markdown), some pipelines read typed fields
+    directly and have no free-text fallback to drop to. Local/small models
+    can still answer with prose instead of the forced structured-output tool
+    call -- observed with qwen3:8b via Ollama on reasoning-heavy prompts,
+    even with ``tool_choice`` forced -- leaving the parser with nothing.
+    Retried once since sampling is stochastic; if every attempt still comes
+    back empty, returns ``fallback`` (expected to be a conservative
+    "no signal" instance for that schema) instead of crashing on
+    ``None`` or fabricating a directional call.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            result = structured_llm.invoke(prompt)
+        except Exception as exc:
+            last_exc = exc
+            result = None
+        if result is not None:
+            return result
+        logger.warning(
+            "%s: structured output returned no parsed result (attempt %d/%d)%s",
+            agent_name, attempt, attempts,
+            f" -- {last_exc}" if last_exc else "",
+        )
+    logger.warning(
+        "%s: falling back to a safe default after %d failed structured-output attempt(s)",
+        agent_name, attempts,
+    )
+    return fallback
+
+
 def invoke_structured_or_freetext(
     structured_llm: Any | None,
     plain_llm: Any,

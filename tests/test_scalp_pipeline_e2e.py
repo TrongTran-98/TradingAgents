@@ -157,3 +157,99 @@ def test_scalp_pipeline_run_end_to_end(monkeypatch):
     # (deliberately wrong) passed_min_rr=False claim above.
     assert signal.entry_trigger.risk_reward_1 == pytest.approx(3.0)
     assert signal.entry_trigger.passed_min_rr is True
+
+
+class _FlakyStructuredInvoker:
+    """Returns None on its first ``misses`` .invoke() calls, then delegates to
+    ``builder`` -- ``with_structured_output`` is only called once per analyst
+    (at node-creation time), so the flakiness must live in repeated
+    ``.invoke()`` calls on the same bound object, matching how
+    invoke_structured_with_fallback actually retries."""
+
+    def __init__(self, builder: Callable[[], object], misses: int):
+        self._builder = builder
+        self._misses = misses
+        self._calls = 0
+
+    def invoke(self, prompt):
+        self._calls += 1
+        if self._calls <= self._misses:
+            return None
+        return self._builder()
+
+
+class _NoneOnceThenScriptedLLM(ScriptedFakeLLM):
+    """Like ScriptedFakeLLM, but one named schema's structured call returns
+    None on its first invocation -- simulating a local model (observed with
+    qwen3:8b via Ollama) answering in free text instead of the forced
+    structured-output tool call. Exercises invoke_structured_with_fallback's
+    retry-then-safe-default path instead of crashing on render(None)."""
+
+    def __init__(self, structured_builders, none_once_for: str, misses: int = 1):
+        super().__init__(structured_builders)
+        self._none_once_for = none_once_for
+        self._misses = misses
+
+    def with_structured_output(self, schema):
+        if schema.__name__ == self._none_once_for:
+            return _FlakyStructuredInvoker(
+                self._structured_builders[schema.__name__], misses=self._misses
+            )
+        return super().with_structured_output(schema)
+
+
+@pytest.mark.unit
+def test_scalp_pipeline_survives_one_none_structured_response(monkeypatch):
+    """A single None structured-output miss (any stage) must be absorbed by
+    the retry in invoke_structured_with_fallback -- the pipeline still
+    completes normally on the retry, exactly like a clean run."""
+    df_by_tf = {
+        "4H": _trending_df(300, freq="4h"),
+        "1H": _trending_df(300, freq="1h"),
+        "15m": _bullish_zigzag_df(freq="15min"),
+        "5m": _trending_df(350, freq="5min"),
+    }
+
+    def _fake_range(symbol, timeframe, date_from, date_to, utc_offset_hours=0.0):
+        return df_by_tf[timeframe].copy()
+
+    monkeypatch.setattr(scalp_tools.mt5_vendor, "get_mt5_rates_range", _fake_range)
+
+    llm = _make_llm()
+    flaky_llm = _NoneOnceThenScriptedLLM(llm._structured_builders, none_once_for="EntryTrigger")
+
+    pipeline = ScalpPipeline(flaky_llm)
+    signal = pipeline.run("XAUUSD", "2026-02-01T12:00:00")
+
+    # The retry succeeded, so the final signal is the same as the clean run.
+    assert signal.entry_trigger.triggered is True
+    assert signal.entry_trigger.passed_min_rr is True
+
+
+@pytest.mark.unit
+def test_scalp_pipeline_uses_safe_fallback_when_entry_trigger_never_parses(monkeypatch):
+    """Both attempts missing must fall back to a safe triggered=False
+    EntryTrigger, not crash render_entry_trigger(None)."""
+    df_by_tf = {
+        "4H": _trending_df(300, freq="4h"),
+        "1H": _trending_df(300, freq="1h"),
+        "15m": _bullish_zigzag_df(freq="15min"),
+        "5m": _trending_df(350, freq="5min"),
+    }
+
+    def _fake_range(symbol, timeframe, date_from, date_to, utc_offset_hours=0.0):
+        return df_by_tf[timeframe].copy()
+
+    monkeypatch.setattr(scalp_tools.mt5_vendor, "get_mt5_rates_range", _fake_range)
+
+    llm = _make_llm()
+    always_none_llm = _NoneOnceThenScriptedLLM(
+        llm._structured_builders, none_once_for="EntryTrigger", misses=999
+    )
+
+    pipeline = ScalpPipeline(always_none_llm)
+    signal = pipeline.run("XAUUSD", "2026-02-01T12:00:00")
+
+    assert signal.entry_trigger.triggered is False
+    assert signal.entry_trigger.trigger_type == "none"
+    assert "did not return a parseable" in signal.entry_trigger.rationale

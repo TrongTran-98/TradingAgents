@@ -21,7 +21,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from tradingagents.agents.utils.scalp_schemas import HTFBias, render_htf_bias
 from tradingagents.agents.utils.scalp_state import ScalpState
 from tradingagents.agents.utils.scalp_tools import get_htf_snapshot
-from tradingagents.agents.utils.structured import bind_structured
+from tradingagents.agents.utils.structured import bind_structured, invoke_structured_with_fallback
 
 _TOOLS = [get_htf_snapshot]
 
@@ -92,7 +92,21 @@ def create_htf_bias_analyst(llm):
             ]
         )
         final_messages = final_prompt.format_messages(messages=messages)
-        htf_bias = structured_llm.invoke(final_messages)
+        htf_bias = invoke_structured_with_fallback(
+            structured_llm,
+            final_messages,
+            fallback=HTFBias(
+                bias="range",
+                confidence="low",
+                key_zones=[],
+                rationale=(
+                    "LLM did not return a parseable structured bias this run; "
+                    "treating as no-clear-bias rather than forcing a direction."
+                ),
+                invalidation_note="n/a",
+            ),
+            agent_name="HTF Bias Analyst",
+        )
 
         return {
             "messages": [AIMessage(content=render_htf_bias(htf_bias))],

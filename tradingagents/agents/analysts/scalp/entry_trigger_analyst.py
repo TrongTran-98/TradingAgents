@@ -21,7 +21,7 @@ from tradingagents.agents.utils.scalp_schemas import (
 )
 from tradingagents.agents.utils.scalp_state import ScalpState
 from tradingagents.agents.utils.scalp_tools import get_entry_snapshot
-from tradingagents.agents.utils.structured import bind_structured
+from tradingagents.agents.utils.structured import bind_structured, invoke_structured_with_fallback
 
 _TOOLS = [get_entry_snapshot]
 
@@ -102,7 +102,19 @@ def create_entry_trigger_analyst(llm):
             ]
         )
         final_messages = final_prompt.format_messages(messages=messages)
-        entry_trigger = structured_llm.invoke(final_messages)
+        entry_trigger = invoke_structured_with_fallback(
+            structured_llm,
+            final_messages,
+            fallback=EntryTrigger(
+                trigger_type="none",
+                triggered=False,
+                rationale=(
+                    "LLM did not return a parseable structured trigger this run; "
+                    "no entry taken rather than forcing one."
+                ),
+            ),
+            agent_name="Entry Trigger Analyst",
+        )
 
         return {
             "messages": [AIMessage(content=render_entry_trigger(entry_trigger))],

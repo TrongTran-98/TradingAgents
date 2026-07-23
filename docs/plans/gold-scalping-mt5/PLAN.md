@@ -3,6 +3,7 @@
 Design reference for the standalone MT5 scalping pipeline. This is the spec;
 [TRACKING.md](TRACKING.md) is the phase-by-phase checklist derived from it — update
 this file if the design changes, and mirror any scope change into the tracker.
+[USAGE.md](USAGE.md) has a quick guide for running the CLI.
 
 ## Context
 

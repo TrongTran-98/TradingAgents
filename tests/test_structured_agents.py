@@ -171,6 +171,60 @@ def test_invoke_structured_falls_back_when_result_is_none():
 
 
 @pytest.mark.unit
+class TestInvokeStructuredWithFallback:
+    """Pipelines that read typed fields (no free-text fallback available) --
+    e.g. the scalp analysts -- use this instead of invoke_structured_or_freetext.
+    Observed in practice with qwen3:8b via Ollama: on reasoning-heavy prompts
+    the model sometimes answers in prose instead of the forced structured-output
+    tool call, even with tool_choice forced, leaving with_structured_output's
+    parser with nothing."""
+
+    def test_returns_result_on_first_success(self):
+        from tradingagents.agents.utils.structured import invoke_structured_with_fallback
+
+        structured = MagicMock()
+        structured.invoke.return_value = "real-result"
+        out = invoke_structured_with_fallback(
+            structured, "prompt", fallback="fallback", agent_name="t"
+        )
+        assert out == "real-result"
+        assert structured.invoke.call_count == 1
+
+    def test_retries_once_then_succeeds(self):
+        from tradingagents.agents.utils.structured import invoke_structured_with_fallback
+
+        structured = MagicMock()
+        structured.invoke.side_effect = [None, "real-result"]
+        out = invoke_structured_with_fallback(
+            structured, "prompt", fallback="fallback", agent_name="t"
+        )
+        assert out == "real-result"
+        assert structured.invoke.call_count == 2
+
+    def test_falls_back_after_repeated_none(self):
+        from tradingagents.agents.utils.structured import invoke_structured_with_fallback
+
+        structured = MagicMock()
+        structured.invoke.return_value = None
+        out = invoke_structured_with_fallback(
+            structured, "prompt", fallback="fallback", agent_name="t"
+        )
+        assert out == "fallback"
+        assert structured.invoke.call_count == 2
+
+    def test_falls_back_after_repeated_exception(self):
+        from tradingagents.agents.utils.structured import invoke_structured_with_fallback
+
+        structured = MagicMock()
+        structured.invoke.side_effect = ValueError("bad JSON from model")
+        out = invoke_structured_with_fallback(
+            structured, "prompt", fallback="fallback", agent_name="t"
+        )
+        assert out == "fallback"
+        assert structured.invoke.call_count == 2
+
+
+@pytest.mark.unit
 class TestTraderAgent:
     def test_structured_path_produces_rendered_markdown(self):
         captured = {}

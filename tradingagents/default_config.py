@@ -169,7 +169,10 @@ DEFAULT_CONFIG = _apply_env_overrides({
         # MT5's copy_rates_* returns bars in broker *server* time, not UTC.
         # Session-window classification is meaningless unless this offset is
         # set correctly for the user's actual broker (verified in Phase 2).
-        "mt5_server_utc_offset_hours": 0,
+        # 3 = Vantage Markets' "VantageMarkets-Live 11" server, confirmed via
+        # symbol_info_tick() vs datetime.now(timezone.utc) during Phase 8
+        # verification. Re-check if you switch broker/server.
+        "mt5_server_utc_offset_hours": 3,
         "timeframes": {"htf": ["4H", "1H"], "ltf": "15m", "entry": "5m"},
         # SL placement: structural invalidation point + a small ATR(5m) buffer
         # to avoid wick-outs.

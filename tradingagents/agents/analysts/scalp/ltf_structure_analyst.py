@@ -21,7 +21,7 @@ from tradingagents.agents.utils.scalp_schemas import (
 )
 from tradingagents.agents.utils.scalp_state import ScalpState
 from tradingagents.agents.utils.scalp_tools import compute_ltf_alignment, get_ltf_snapshot
-from tradingagents.agents.utils.structured import bind_structured
+from tradingagents.agents.utils.structured import bind_structured, invoke_structured_with_fallback
 
 _TOOLS = [get_ltf_snapshot]
 
@@ -94,7 +94,22 @@ def create_ltf_structure_analyst(llm):
             ]
         )
         final_messages = final_prompt.format_messages(messages=messages)
-        ltf_structure = structured_llm.invoke(final_messages)
+        ltf_structure = invoke_structured_with_fallback(
+            structured_llm,
+            final_messages,
+            fallback=LTFStructure(
+                event="none",
+                session="off_session",
+                volatility_regime="low",
+                agrees_with_htf=False,
+                tradeable=False,
+                rationale=(
+                    "LLM did not return a parseable structured read this run; "
+                    "skipping this cycle rather than forcing a trade decision."
+                ),
+            ),
+            agent_name="LTF Structure Analyst",
+        )
 
         agrees_with_htf = compute_ltf_alignment(symbol, as_of_utc, htf_bias.bias)
         ltf_structure = ltf_structure.model_copy(update={"agrees_with_htf": agrees_with_htf})
