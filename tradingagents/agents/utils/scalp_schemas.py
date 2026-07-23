@@ -223,6 +223,74 @@ class ScalpSignal(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Render helpers -- carry a step's structured output forward as text context
+# for the next analyst's prompt (Phase 4's per-stage message clearing means
+# state fields, not accumulated messages, are how later steps see earlier
+# ones -- see scalp_pipeline.py).
+# ---------------------------------------------------------------------------
+
+
+def render_htf_bias(bias: HTFBias) -> str:
+    """Render an HTFBias to a compact text block for downstream analyst prompts."""
+    zones = "\n".join(
+        f"  - {z.price} -- {z.label} ({z.source_timeframe})" for z in bias.key_zones
+    ) or "  (none)"
+    return "\n".join([
+        f"Bias: {bias.bias} (confidence: {bias.confidence})",
+        f"Rationale: {bias.rationale}",
+        f"Invalidation: {bias.invalidation_note}",
+        "Key zones:",
+        zones,
+    ])
+
+
+def render_ltf_structure(structure: LTFStructure) -> str:
+    """Render an LTFStructure to a compact text block for the entry analyst's prompt."""
+    displacement = (
+        f"{structure.displacement_atr} ATR" if structure.displacement_atr is not None else "n/a"
+    )
+    event = f"{structure.event}"
+    if structure.event_price is not None:
+        event += f" at {structure.event_price}"
+    return "\n".join([
+        f"Event: {event}",
+        f"Displacement: {displacement}",
+        f"Session: {structure.session}",
+        f"Volatility regime: {structure.volatility_regime}",
+        f"Agrees with HTF bias: {structure.agrees_with_htf}",
+        f"Tradeable: {structure.tradeable}",
+        f"Rationale: {structure.rationale}",
+    ])
+
+
+def render_entry_trigger(trigger: EntryTrigger) -> str:
+    """Render an EntryTrigger to a compact text block for logging/journal display."""
+    lines = [
+        f"Trigger type: {trigger.trigger_type}",
+        f"Triggered: {trigger.triggered}",
+    ]
+    if trigger.confluence_zone is not None:
+        lines.append(
+            f"Confluence zone: {trigger.confluence_zone.price} -- "
+            f"{trigger.confluence_zone.label} ({trigger.confluence_zone.source_timeframe})"
+        )
+    if trigger.entry_price is not None:
+        lines.append(f"Entry: {trigger.entry_price}")
+    if trigger.stop_loss is not None:
+        lines.append(f"Stop loss: {trigger.stop_loss}")
+    if trigger.take_profit_1 is not None:
+        lines.append(f"Take profit 1: {trigger.take_profit_1}")
+    if trigger.take_profit_2 is not None:
+        lines.append(f"Take profit 2: {trigger.take_profit_2}")
+    if trigger.risk_reward_1 is not None:
+        lines.append(f"Risk:reward (TP1): {trigger.risk_reward_1}")
+    lines.append(f"Passed min R:R: {trigger.passed_min_rr}")
+    lines.append(f"Passed max SL: {trigger.passed_max_sl}")
+    lines.append(f"Rationale: {trigger.rationale}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Phase 7 -- weekly reflection
 # ---------------------------------------------------------------------------
 

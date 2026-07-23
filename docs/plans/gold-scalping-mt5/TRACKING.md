@@ -13,7 +13,7 @@ Status values: `todo` · `in-progress` · `blocked` · `done`
 | 1 | Deterministic features | `dataflows/scalp_features.py` | done |
 | 2 | MT5 integration | `dataflows/mt5_session.py`, `dataflows/mt5_vendor.py` | in-progress |
 | 3 | Schemas & state | `agents/utils/scalp_schemas.py`, `agents/utils/scalp_state.py` | done |
-| 4 | Analysts & pipeline | `agents/utils/scalp_tools.py`, `agents/analysts/scalp/*`, `graph/scalp_pipeline.py` | todo |
+| 4 | Analysts & pipeline | `agents/utils/scalp_tools.py`, `agents/analysts/scalp/*`, `graph/scalp_pipeline.py` | done |
 | 5 | Journal write path | `dataflows/scalp_journal.py` | todo |
 | 6 | Walk-forward resolver | `dataflows/scalp_journal.py` (resolver) | todo |
 | 7 | Weekly reflection | `graph/scalp_reflection.py` | todo |
@@ -157,36 +157,64 @@ the "LLM proposes, Python verifies" pattern used elsewhere in the design.
 
 ## Phase 4 — Analysts & pipeline (first real LLM calls)
 
-- [ ] `scalp_tools.py` — `@tool`-wrapped feature snapshots per analyst (HTF snapshot, LTF
-      snapshot, entry snapshot), formatted the same way `market_analyst.py`'s `get_indicators`
-      formats output for the LLM.
-- [ ] `agents/analysts/scalp/htf_bias_analyst.py` — Step 1, combined 4H+1H call, outputs
-      `HTFBias` via `bind_structured`.
-- [ ] `agents/analysts/scalp/ltf_structure_analyst.py` — Step 2, 15m call, outputs
-      `LTFStructure`; computes `agrees_with_htf` gate in Python, not LLM judgment.
-- [ ] `agents/analysts/scalp/entry_trigger_analyst.py` — Steps 3+4, 5m call, outputs
-      `EntryTrigger`.
-- [ ] `graph/scalp_pipeline.py` — `ScalpPipeline`: 3-node sequential LangGraph wiring the three
-      analysts + `ToolNode`s.
-- [ ] `ScalpPipeline.run()` — **deterministic post-LLM verification**: recompute
-      `risk_reward_1` and the max-SL check in Python from the LLM's proposed
-      `entry_price`/`stop_loss`/`take_profit_1`; force `passed_min_rr`/`passed_max_sl = False`
-      if the LLM's numbers don't actually pass (mirrors `build_verified_market_snapshot`'s
-      "LLM proposes, Python verifies" pattern).
-- [ ] Wire active-lessons injection point into `ScalpState` at pipeline start (full
-      implementation lands in Phase 7, but the injection seam should exist here).
+- [x] `scalp_tools.py` — `@tool`-wrapped feature snapshots per analyst (`get_htf_snapshot`,
+      `get_ltf_snapshot`, `get_entry_snapshot`), formatted the same way `market_analyst.py`'s
+      `get_indicators` formats output for the LLM. Each tool takes only `symbol`/`as_of_utc`
+      (config is read via `get_config()`) and independently recomputes candidate key zones from
+      its own fetched bars, so all three stay static, args-only tools a `ToolNode` can register
+      once — `get_entry_snapshot` does not receive Step 1/2's key zones as a hidden parameter;
+      the LLM cross-references its own freshly-computed candidates against what Step 1/2 already
+      said earlier in the conversation.
+- [x] `agents/analysts/scalp/htf_bias_analyst.py` — Step 1, combined 4H+1H call, outputs
+      `HTFBias` via `bind_structured`. Two-pass node: pass 1 asks the LLM to call
+      `get_htf_snapshot` (routed to `tools_htf`); pass 2, once a `ToolMessage` is present, calls
+      the structured-output LLM directly over the accumulated messages instead of free text.
+- [x] `agents/analysts/scalp/ltf_structure_analyst.py` — Step 2, 15m call, outputs
+      `LTFStructure`; computes `agrees_with_htf` gate in Python via
+      `scalp_tools.compute_ltf_alignment` (independently re-fetches 15m bars and reclassifies
+      structure), overwriting both the schema field and the top-level `ScalpState` field
+      regardless of the LLM's own guess.
+- [x] `agents/analysts/scalp/entry_trigger_analyst.py` — Steps 3+4, 5m call, outputs
+      `EntryTrigger`. Does not self-verify R:R/max-SL — that's `ScalpPipeline.run()`'s job (needs
+      a fresh ATR(5m) read independent of the LLM's tool call).
+- [x] `graph/scalp_pipeline.py` — `ScalpPipeline`: sequential LangGraph wiring the three
+      analysts + `ToolNode`s + message-clearing nodes between stages (mirrors
+      `graph/setup.py`'s analyst/tool/clear-node triple). The LTF→Entry edge is gated on
+      `LTFStructure.tradeable`; an untradeable read skips Step 3+4 and returns a synthetic
+      `triggered=False` `EntryTrigger`.
+- [x] `ScalpPipeline.run()` — **deterministic post-LLM verification** via `_verify_entry_trigger`:
+      recomputes `risk_reward_1` and the max-SL check in Python from the LLM's proposed
+      `entry_price`/`stop_loss`/`take_profit_1` (plus a fresh `get_entry_atr` read), forcing
+      `passed_min_rr`/`passed_max_sl = False` if the LLM's numbers don't actually pass (mirrors
+      `build_verified_market_snapshot`'s "LLM proposes, Python verifies" pattern).
+- [x] Wired the active-lessons injection seam: `ScalpPipeline.run(..., active_lessons=str)` seeds
+      `ScalpState.active_lessons`, and all three analyst prompts inject it when non-empty (full
+      write path lands in Phase 7).
 
 **Tests**:
-- [ ] `tests/test_scalp_toolnode.py` — mirrors `test_market_toolnode.py`: every tool bound to
+- [x] `tests/test_scalp_toolnode.py` — mirrors `test_market_toolnode.py`: every tool bound to
       an analyst's LLM must be registered in that analyst's `ToolNode`.
-- [ ] End-to-end run against historical `as_of_utc` timestamps with debug streaming (mirroring
-      `trading_graph.py`'s debug trace) before trusting output.
+- [x] `tests/test_scalp_tools.py` — candidate key zones, per-tool vendor-error handling, snapshot
+      happy paths, and `compute_ltf_alignment`/`get_entry_atr` in isolation.
+- [x] `tests/test_scalp_pipeline_verification.py` — `_verify_entry_trigger` unit tests: good
+      R:R/SL, LLM-overclaimed R:R forced False, LLM-overclaimed max-SL forced False, untriggered
+      forces both False, missing price fields forces both False, no-ATR forces max-SL False.
+- [x] `tests/test_scalp_pipeline_construction.py` — graph builds/compiles against a stub LLM
+      (catches node/edge wiring typos at `compile()` time).
+- [x] `tests/test_scalp_pipeline_e2e.py` — full `ScalpPipeline.run()` against a scripted fake LLM
+      and mocked MT5 bars: exercises the two-pass tool-call/structured node logic, message
+      clearing between stages, the tradeable gate, and confirms the pipeline overwrites a
+      deliberately-wrong `agrees_with_htf`/`passed_min_rr` claim from the (fake) LLM. Stands in
+      for TRACKING's original "debug streaming against historical `as_of_utc`" ask, since that
+      needs a real LLM provider.
 
 **Definition of done**: `tests/test_scalp_toolnode.py` passes; a manual end-to-end run against
 a historical timestamp produces a `ScalpSignal` with internally consistent
 bias→structure→entry reasoning, and a deliberately-bad LLM R:R claim is caught and flagged by
 the Python verification step (test this by temporarily forcing a bad LLM output or a unit test
-on the verification function in isolation).
+on the verification function in isolation). **Outstanding**: the manual run against a real LLM
+provider + historical timestamps hasn't been done in this environment (no live provider call
+here); `test_scalp_pipeline_e2e.py`'s scripted-LLM run is the automated substitute and passes.
 
 ---
 
