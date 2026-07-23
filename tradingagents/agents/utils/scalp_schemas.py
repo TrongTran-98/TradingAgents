@@ -85,11 +85,15 @@ class HTFBias(BaseModel):
 class LTFStructure(BaseModel):
     """Step 2 structured output: 15m structure/session read.
 
-    ``agrees_with_htf`` is filled by the LLM as its own read but is always
-    overwritten by the pipeline's deterministic alignment check (Step 2's
-    "computed as a boolean, not left to LLM judgment alone" gate) -- same
-    "LLM proposes, Python verifies" pattern as ``EntryTrigger.passed_min_rr``/
-    ``passed_max_sl`` below.
+    ``agrees_with_htf`` and ``tradeable`` are both filled by the LLM as
+    best-effort reads but are always overwritten by the pipeline
+    (``ltf_structure_analyst.py``) with deterministic values -- same "LLM
+    proposes, Python verifies" pattern as ``EntryTrigger.passed_min_rr``/
+    ``passed_max_sl`` below. ``tradeable`` is recomputed from ``confidence``
+    (the LLM's actual judgment call) plus a hard session/volatility gate via
+    ``scalp_tools.compute_ltf_tradeable``, thresholded against
+    ``scalping.min_ltf_confidence`` -- so a single "no event this bar" read
+    no longer has to collapse straight to a binary skip.
     """
 
     event: Literal["BOS", "CHoCH", "none"] = Field(
@@ -123,11 +127,26 @@ class LTFStructure(BaseModel):
             "and overwrites it regardless of what is filled in here."
         ),
     )
-    tradeable: bool = Field(
+    confidence: Literal["low", "medium", "high"] = Field(
         description=(
-            "Whether the pipeline should proceed to Step 3. False when "
-            "off-session, low/abnormal volatility, or structure disagrees "
-            "with HTF bias without a clean CHoCH."
+            "Confidence that this setup is worth proceeding to Step 3. "
+            "'high' only when session/volatility are clean and there is "
+            "either a fresh, well-displaced BOS/CHoCH or strong HTF "
+            "alignment; 'medium' when the case is mixed but still workable; "
+            "'low' when there is no event, signals conflict, or evidence is "
+            "thin. This is the actual judgment call -- the pipeline "
+            "thresholds it against scalping.min_ltf_confidence rather than "
+            "trusting a self-reported tradeable flag."
+        ),
+    )
+    tradeable: bool = Field(
+        default=False,
+        description=(
+            "Whether the pipeline proceeded to Step 3. Best-effort read; "
+            "the pipeline always overwrites this deterministically from "
+            "session/volatility hard gates plus scalping.min_ltf_confidence "
+            "thresholded against ``confidence`` above -- never trust the "
+            "LLM's own value here."
         ),
     )
     rationale: str = Field(
@@ -301,6 +320,7 @@ def render_ltf_structure(structure: LTFStructure) -> str:
         f"Session: {structure.session}",
         f"Volatility regime: {structure.volatility_regime}",
         f"Agrees with HTF bias: {structure.agrees_with_htf}",
+        f"Confidence: {structure.confidence}",
         f"Tradeable: {structure.tradeable}",
         f"Rationale: {structure.rationale}",
     ])

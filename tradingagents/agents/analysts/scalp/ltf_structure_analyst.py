@@ -2,11 +2,15 @@
 
 Full design: docs/plans/gold-scalping-mt5/PLAN.md. Same two-pass shape as
 ``htf_bias_analyst.py``. After the LLM produces its own best-effort
-``LTFStructure`` (including its own guess at ``agrees_with_htf``), this node
-overwrites ``agrees_with_htf`` with ``scalp_tools.compute_ltf_alignment``'s
-deterministic result -- Step 2's "computed as a boolean, not left to LLM
-judgment alone" gate -- and mirrors it into the top-level
-``ScalpState.agrees_with_htf`` field for Phase 7's bucketing.
+``LTFStructure`` (including its own guess at ``agrees_with_htf`` and
+``tradeable``), this node overwrites both: ``agrees_with_htf`` with
+``scalp_tools.compute_ltf_alignment``'s deterministic result, and
+``tradeable`` with ``scalp_tools.compute_ltf_tradeable`` applied to the
+LLM's own ``confidence`` read plus a hard session/volatility gate,
+thresholded against ``scalping.min_ltf_confidence`` -- Step 2's "computed
+deterministically, not left to LLM judgment alone" gate. ``agrees_with_htf``
+is also mirrored into the top-level ``ScalpState.agrees_with_htf`` field for
+Phase 7's bucketing.
 """
 
 from __future__ import annotations
@@ -20,8 +24,13 @@ from tradingagents.agents.utils.scalp_schemas import (
     render_ltf_structure,
 )
 from tradingagents.agents.utils.scalp_state import ScalpState
-from tradingagents.agents.utils.scalp_tools import compute_ltf_alignment, get_ltf_snapshot
+from tradingagents.agents.utils.scalp_tools import (
+    compute_ltf_alignment,
+    compute_ltf_tradeable,
+    get_ltf_snapshot,
+)
 from tradingagents.agents.utils.structured import bind_structured, invoke_structured_with_fallback
+from tradingagents.dataflows.config import get_config
 
 _TOOLS = [get_ltf_snapshot]
 
@@ -62,11 +71,18 @@ def create_ltf_structure_analyst(llm):
             f"{as_of_utc} to retrieve the deterministic 15m structure, "
             "BOS/CHoCH event, session, and volatility regime. Only report "
             "the event/session/ATR readings present in that snapshot -- "
-            "never invent one. Set tradeable=False when off-session, when "
-            "volatility is low (chop) or an abnormal spike, or when 15m "
-            "structure disagrees with the Step 1 bias without a clean "
-            "CHoCH. Prefer entries after a retracement into the broken "
-            f"level over chasing the breakout candle.{lessons_block}"
+            "never invent one. Report your actual judgment as confidence, "
+            "not a hard yes/no: 'high' only when session/volatility are "
+            "clean and there is either a fresh, well-displaced BOS/CHoCH "
+            "or strong HTF alignment; 'medium' when the case is mixed but "
+            "still workable (e.g. no fresh event but structure still "
+            "agrees with the Step 1 bias); 'low' when there is no event, "
+            "signals conflict, or evidence is thin. Off-session and low/"
+            "abnormal-spike volatility are always a hard skip regardless "
+            "of confidence -- the pipeline enforces that deterministically, "
+            "so just report what the snapshot shows. Prefer entries after "
+            "a retracement into the broken level over chasing the "
+            f"breakout candle.{lessons_block}"
         )
 
         has_tool_result = any(isinstance(m, ToolMessage) for m in messages)
@@ -102,6 +118,7 @@ def create_ltf_structure_analyst(llm):
                 session="off_session",
                 volatility_regime="low",
                 agrees_with_htf=False,
+                confidence="low",
                 tradeable=False,
                 rationale=(
                     "LLM did not return a parseable structured read this run; "
@@ -112,7 +129,16 @@ def create_ltf_structure_analyst(llm):
         )
 
         agrees_with_htf = compute_ltf_alignment(symbol, as_of_utc, htf_bias.bias)
-        ltf_structure = ltf_structure.model_copy(update={"agrees_with_htf": agrees_with_htf})
+        min_ltf_confidence = get_config()["scalping"]["min_ltf_confidence"]
+        tradeable = compute_ltf_tradeable(
+            session=ltf_structure.session,
+            volatility_regime=ltf_structure.volatility_regime,
+            confidence=ltf_structure.confidence,
+            min_confidence=min_ltf_confidence,
+        )
+        ltf_structure = ltf_structure.model_copy(
+            update={"agrees_with_htf": agrees_with_htf, "tradeable": tradeable}
+        )
 
         return {
             "messages": [AIMessage(content=render_ltf_structure(ltf_structure))],

@@ -4,8 +4,11 @@ Full design: docs/plans/gold-scalping-mt5/PLAN.md. Mirrors
 ``TradingAgentsGraph``/``graph/setup.py``'s analyst-node + ToolNode +
 clear-node wiring, scoped to the three scalp analysts with no debate/risk
 stages: HTF Bias -> LTF Structure -> Entry Trigger. The LTF Structure ->
-Entry Trigger edge is gated by ``LTFStructure.tradeable`` -- an
-untradeable read skips Step 3+4 entirely rather than forcing an entry
+Entry Trigger edge is gated by ``LTFStructure.tradeable`` -- which
+``ltf_structure_analyst.py`` always overwrites deterministically from a
+session/volatility hard gate plus the LLM's ``confidence`` read thresholded
+against ``scalping.min_ltf_confidence`` (``scalp_tools.compute_ltf_tradeable``)
+-- an untradeable read skips Step 3+4 entirely rather than forcing an entry
 attempt.
 
 Deliberately standalone from ``TradingAgentsGraph``: different state shape

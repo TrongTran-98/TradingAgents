@@ -104,7 +104,8 @@ def _make_llm() -> ScriptedFakeLLM:
             session="london_ny_overlap",
             volatility_regime="normal",
             agrees_with_htf=False,  # deliberately wrong -- the pipeline must overwrite this
-            tradeable=True,
+            confidence="high",
+            tradeable=False,  # deliberately wrong -- the pipeline must overwrite this from confidence
             rationale="15m BOS agrees with HTF bullish bias during overlap session.",
         )
 
@@ -146,6 +147,8 @@ def test_scalp_pipeline_run_end_to_end(monkeypatch):
 
     assert signal.symbol == "XAUUSD"
     assert signal.htf_bias.bias == "bullish"
+    # Python-recomputed from confidence="high" + clean session/volatility,
+    # not the LLM's (deliberately wrong) tradeable=False claim above.
     assert signal.ltf_structure.tradeable is True
     # Python-recomputed from the real (mocked) 15m bars, not the LLM's
     # (deliberately wrong) claim above -- the zigzag fixture genuinely

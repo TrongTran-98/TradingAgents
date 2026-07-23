@@ -46,6 +46,7 @@ def _sample_signal() -> ScalpSignal:
             session="london_ny_overlap",
             volatility_regime="normal",
             agrees_with_htf=True,
+            confidence="high",
             tradeable=True,
             rationale="BOS confirms continuation into overlap session.",
         ),

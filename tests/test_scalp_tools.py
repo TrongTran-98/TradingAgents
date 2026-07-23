@@ -136,3 +136,40 @@ class TestGetEntryAtr:
             raise NoMarketDataError("XAUUSD", detail="no bars")
         monkeypatch.setattr(scalp_tools.mt5_vendor, "get_mt5_rates_range", _raise)
         assert scalp_tools.get_entry_atr("XAUUSD", "2026-02-01T00:00:00") is None
+
+
+@pytest.mark.unit
+class TestComputeLtfTradeable:
+    """Step 2's confidence-thresholded gate: hard session/volatility skip first,
+    then confidence vs. scalping.min_ltf_confidence -- see
+    ltf_structure_analyst.py and default_config.py's scalping block."""
+
+    def test_off_session_hard_skips_regardless_of_confidence(self):
+        assert scalp_tools.compute_ltf_tradeable(
+            session="off_session", volatility_regime="normal", confidence="high", min_confidence="low"
+        ) is False
+
+    def test_low_volatility_hard_skips_regardless_of_confidence(self):
+        assert scalp_tools.compute_ltf_tradeable(
+            session="ny", volatility_regime="low", confidence="high", min_confidence="low"
+        ) is False
+
+    def test_abnormal_spike_hard_skips_regardless_of_confidence(self):
+        assert scalp_tools.compute_ltf_tradeable(
+            session="ny", volatility_regime="abnormal_spike", confidence="high", min_confidence="low"
+        ) is False
+
+    def test_confidence_below_threshold_skips(self):
+        assert scalp_tools.compute_ltf_tradeable(
+            session="ny", volatility_regime="normal", confidence="low", min_confidence="medium"
+        ) is False
+
+    def test_confidence_meeting_threshold_proceeds(self):
+        assert scalp_tools.compute_ltf_tradeable(
+            session="ny", volatility_regime="normal", confidence="medium", min_confidence="medium"
+        ) is True
+
+    def test_confidence_above_threshold_proceeds(self):
+        assert scalp_tools.compute_ltf_tradeable(
+            session="ny", volatility_regime="high", confidence="high", min_confidence="medium"
+        ) is True

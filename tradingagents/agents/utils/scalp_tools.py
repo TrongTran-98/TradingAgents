@@ -334,6 +334,30 @@ def compute_ltf_alignment(symbol: str, as_of_utc: str, htf_bias_direction: str) 
     return structure == htf_bias_direction
 
 
+_CONFIDENCE_RANK = {"low": 0, "medium": 1, "high": 2}
+
+
+def compute_ltf_tradeable(
+    session: str, volatility_regime: str, confidence: str, min_confidence: str
+) -> bool:
+    """Python-truth Step 2 gate (Step 2's "computed as a boolean, not left to LLM judgment alone" gate).
+
+    Off-session or low/abnormal-spike volatility always hard-skip regardless
+    of confidence -- these are readings the LLM is instructed to copy
+    verbatim from ``get_ltf_snapshot``, not judgment calls. Otherwise
+    proceeds only when the LLM's self-reported ``confidence`` meets or
+    exceeds ``min_confidence`` (``scalping.min_ltf_confidence``), so a "no
+    event this bar" read no longer collapses straight to a binary skip --
+    a medium-confidence HTF-aligned read with clean session/volatility can
+    still proceed to Step 3.
+    """
+    if session == "off_session":
+        return False
+    if volatility_regime in ("low", "abnormal_spike"):
+        return False
+    return _CONFIDENCE_RANK[confidence] >= _CONFIDENCE_RANK[min_confidence]
+
+
 def get_entry_atr(symbol: str, as_of_utc: str) -> float | None:
     """Current ATR(5m) for ``symbol`` at ``as_of_utc``.
 

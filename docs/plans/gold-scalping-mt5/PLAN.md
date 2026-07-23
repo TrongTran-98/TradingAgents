@@ -113,8 +113,15 @@ Deterministic features computed in Python, handed to the LLM as a formatted snap
 - **Volatility filter**: `volatility_regime` flags "low" (chop, skip) or "abnormal_spike" (news
   event, skip unless explicitly trading news).
 - **LLM output** (`LTFStructure`): `event` (BOS/CHoCH/none), `event_price`, `displacement_atr`,
-  `session`, `volatility_regime`, `tradeable: bool` (gates whether the pipeline proceeds to
-  Step 3), `rationale`.
+  `session`, `volatility_regime`, `confidence` (low/medium/high — the LLM's actual judgment call
+  on whether this setup is worth proceeding to Step 3), `rationale`.
+- **Tradeable gate** (`tradeable: bool`, `scalp_tools.compute_ltf_tradeable`): computed
+  deterministically, not left to LLM judgment alone — hard-skips off-session or low/
+  abnormal-spike volatility regardless of confidence, otherwise proceeds to Step 3 only when
+  `confidence` meets or exceeds `scalping.min_ltf_confidence` (default `"medium"`). Replaces an
+  earlier design where the LLM self-reported `tradeable` directly, which collapsed a "no fresh
+  BOS/CHoCH this bar" read straight into a hard skip even when session/volatility/HTF alignment
+  were otherwise fine.
 
 ### Step 3 — 5m Entry Trigger + Step 4 — Invalidation & Targets (`entry_trigger_analyst.py`)
 

@@ -184,6 +184,11 @@ DEFAULT_CONFIG = _apply_env_overrides({
         "min_risk_reward": 1.5,
         # BOS/CHoCH displacement threshold (close-based), in ATR(15m) units.
         "min_displacement_atr": 0.25,
+        # Step 2 gate: minimum LLM-reported LTFStructure.confidence
+        # ("low"/"medium"/"high") required to proceed to Step 3, applied on
+        # top of the hard off-session/low-or-abnormal-volatility skip -- see
+        # scalp_tools.compute_ltf_tradeable.
+        "min_ltf_confidence": "medium",
         # Gold-relevant liquidity windows, [start_hour, end_hour) in UTC.
         "sessions_utc": {"london": [7, 16], "ny": [12, 21]},
         # Walk-forward outcome window: 48 x 5m bars = 4 hours.

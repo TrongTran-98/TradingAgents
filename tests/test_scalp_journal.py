@@ -38,6 +38,7 @@ def _signal(**overrides) -> ScalpSignal:
             session="london_ny_overlap",
             volatility_regime="normal",
             agrees_with_htf=True,
+            confidence="high",
             tradeable=True,
             rationale="15m BOS agrees with HTF bullish bias during overlap session.",
         ),

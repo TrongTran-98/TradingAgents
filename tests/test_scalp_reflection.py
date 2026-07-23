@@ -61,6 +61,7 @@ def _signal(
             session=session,
             volatility_regime="normal",
             agrees_with_htf=agrees_with_htf,
+            confidence="high",
             tradeable=True,
             rationale="15m BOS read.",
         ),
