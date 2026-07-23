@@ -12,7 +12,7 @@ Status values: `todo` · `in-progress` · `blocked` · `done`
 | 0 | Scaffolding | `default_config.py`, `pyproject.toml` | done |
 | 1 | Deterministic features | `dataflows/scalp_features.py` | done |
 | 2 | MT5 integration | `dataflows/mt5_session.py`, `dataflows/mt5_vendor.py` | in-progress |
-| 3 | Schemas & state | `agents/utils/scalp_schemas.py`, `agents/utils/scalp_state.py` | todo |
+| 3 | Schemas & state | `agents/utils/scalp_schemas.py`, `agents/utils/scalp_state.py` | done |
 | 4 | Analysts & pipeline | `agents/utils/scalp_tools.py`, `agents/analysts/scalp/*`, `graph/scalp_pipeline.py` | todo |
 | 5 | Journal write path | `dataflows/scalp_journal.py` | todo |
 | 6 | Walk-forward resolver | `dataflows/scalp_journal.py` (resolver) | todo |
@@ -125,26 +125,33 @@ known London/NY session hours.
 
 No dependencies — can be built in parallel with Phase 1.
 
-- [ ] `KeyZone` — price level/zone + label (e.g. "prior day high", "round number", "pivot R1")
+- [x] `KeyZone` — price level/zone + label (e.g. "prior day high", "round number", "pivot R1")
       + source timeframe.
-- [ ] `HTFBias` — `bias` (bullish/bearish/range), `confidence`, `key_zones: list[KeyZone]`,
+- [x] `HTFBias` — `bias` (bullish/bearish/range), `confidence`, `key_zones: list[KeyZone]`,
       `rationale`, `invalidation_note`.
-- [ ] `LTFStructure` — `event` (BOS/CHoCH/none), `event_price`, `displacement_atr`, `session`,
+- [x] `LTFStructure` — `event` (BOS/CHoCH/none), `event_price`, `displacement_atr`, `session`,
       `volatility_regime`, `tradeable: bool`, `rationale`.
-- [ ] `EntryTrigger` — trigger type, `triggered: bool`, `confluence_zone` (non-null required
+- [x] `EntryTrigger` — trigger type, `triggered: bool`, `confluence_zone` (non-null required
       when `triggered=True` — enforce with a Pydantic validator, not just a docstring),
       `entry_price`, `stop_loss`, `take_profit_1`, `take_profit_2`, `risk_reward_1`,
       `passed_min_rr`, `passed_max_sl`.
-- [ ] `ScalpSignal` — top-level artifact: symbol, `generated_at_utc`, `HTFBias`,
+- [x] `ScalpSignal` — top-level artifact: symbol, `generated_at_utc`, `HTFBias`,
       `LTFStructure`, `EntryTrigger`, and a `signal_id` for journal cross-referencing.
-- [ ] `ScalpState(MessagesState)` in `scalp_state.py` — carries the three-step state across the
+- [x] `ScalpState(MessagesState)` in `scalp_state.py` — carries the three-step state across the
       pipeline's LangGraph nodes plus injected active lessons (see Phase 7).
-- [ ] `WeeklyReviewResult` / `Lesson` schemas (used by Phase 7, define here alongside the rest):
+- [x] `WeeklyReviewResult` / `Lesson` schemas (used by Phase 7, define here alongside the rest):
       `Lesson.supporting_signal_ids: list[str]`, `Lesson.occurrences: int`.
 
 **Definition of done**: all schemas import cleanly with no circular deps on
 `scalp_features.py`/`scalp_tools.py`; `EntryTrigger`'s confluence-required-when-triggered
 invariant is enforced at the model level and covered by a quick construction test.
+
+Implemented in [scalp_schemas.py](../../../tradingagents/agents/utils/scalp_schemas.py) and
+[scalp_state.py](../../../tradingagents/agents/utils/scalp_state.py); covered by
+[tests/test_scalp_schemas.py](../../../tests/test_scalp_schemas.py) (7 tests, all passing).
+`agrees_with_htf`/`passed_min_rr`/`passed_max_sl` are modeled as LLM-fillable fields that
+Phase 4's pipeline deterministically overwrites (documented in each schema's docstring), matching
+the "LLM proposes, Python verifies" pattern used elsewhere in the design.
 
 ---
 
