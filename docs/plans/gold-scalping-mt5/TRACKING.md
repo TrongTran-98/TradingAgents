@@ -10,7 +10,7 @@ Status values: `todo` · `in-progress` · `blocked` · `done`
 | # | Phase | Key files | Status |
 |---|-------|-----------|--------|
 | 0 | Scaffolding | `default_config.py`, `pyproject.toml` | done |
-| 1 | Deterministic features | `dataflows/scalp_features.py` | todo |
+| 1 | Deterministic features | `dataflows/scalp_features.py` | done |
 | 2 | MT5 integration | `dataflows/mt5_session.py`, `dataflows/mt5_vendor.py` | todo |
 | 3 | Schemas & state | `agents/utils/scalp_schemas.py`, `agents/utils/scalp_state.py` | todo |
 | 4 | Analysts & pipeline | `agents/utils/scalp_tools.py`, `agents/analysts/scalp/*`, `graph/scalp_pipeline.py` | todo |
@@ -52,34 +52,34 @@ resolves with all keys; `pip install -e ".[mt5]"` succeeds on a Windows box.
 No MT5/LLM dependency. Highest risk of subtle bugs (threshold boundaries), so front-load unit
 tests here before anything downstream depends on it.
 
-- [ ] `detect_swings(df, n)` — symmetric N-bar fractal swing-high/low detection.
-- [ ] `classify_structure(swings)` — HH/HL → bullish, LH/LL → bearish, else → range/mixed.
-- [ ] `ema_stack_alignment(df, fast=50, slow=200)` — relative position + slope; "compressed"
+- [x] `detect_swings(df, n)` — symmetric N-bar fractal swing-high/low detection.
+- [x] `classify_structure(swings)` — HH/HL → bullish, LH/LL → bearish, else → range/mixed.
+- [x] `ema_stack_alignment(df, fast=50, slow=200)` — relative position + slope; "compressed"
       classification when EMAs are within X×ATR of each other.
-- [ ] `atr_regime(df)` — current ATR vs its own rolling percentile → low/normal/high.
-- [ ] `prior_day_week_levels(df)` — prior day/week high-low.
-- [ ] `round_number_levels(price, step)` — configurable psychological levels for gold.
-- [ ] `daily_pivot_points(df)` — classic PP/R1/S1/R2/S2, gated by `use_pivot_points` config.
-- [ ] `detect_bos_choch(df, swings, min_displacement_atr)` — **close-based only**; BOS =
+- [x] `atr_regime(df)` — current ATR vs its own rolling percentile → low/normal/high.
+- [x] `prior_day_week_levels(df)` — prior day/week high-low.
+- [x] `round_number_levels(price, step)` — configurable psychological levels for gold.
+- [x] `daily_pivot_points(df)` — classic PP/R1/S1/R2/S2, gated by `use_pivot_points` config.
+- [x] `detect_bos_choch(df, swings, min_displacement_atr)` — **close-based only**; BOS =
       close beyond most recent same-direction swing by ≥ threshold×ATR, CHoCH = opposite
       direction. Verify wick-only pierces that close back inside do **not** trigger either.
-- [ ] `session_window(timestamp_utc, sessions_utc)` — asian/london/ny/london_ny_overlap/
+- [x] `session_window(timestamp_utc, sessions_utc)` — asian/london/ny/london_ny_overlap/
       off_session classification.
-- [ ] `liquidity_sweep(df, swings, wick_atr_ratio)` — wick pierce ≥ ratio×ATR then closes back
+- [x] `liquidity_sweep(df, swings, wick_atr_ratio)` — wick pierce ≥ ratio×ATR then closes back
       inside; close does not confirm the break.
-- [ ] `detect_order_blocks(df)` — last opposite-color candle before a displacement/BOS move.
-- [ ] `detect_fair_value_gaps(df)` — 3-candle imbalance detection + fill/rejection check.
-- [ ] `rsi_stoch_momentum(df)` — EMA pullback + RSI/stochastic turn confirmation.
-- [ ] `confluence_distance(price, key_zones)` — ATR-normalized distance from a candidate
+- [x] `detect_order_blocks(df)` — last opposite-color candle before a displacement/BOS move.
+- [x] `detect_fair_value_gaps(df)` — 3-candle imbalance detection + fill/rejection check.
+- [x] `rsi_stoch_momentum(df)` — EMA pullback + RSI/stochastic turn confirmation.
+- [x] `confluence_distance(price, key_zones)` — ATR-normalized distance from a candidate
       trigger price to the nearest `KeyZone`.
 
 **Unit tests** (`tests/test_scalp_features.py`):
-- [ ] Swing detection on synthetic fixture DataFrames (known peaks/troughs).
-- [ ] BOS/CHoCH threshold boundary cases (just under vs. just over `min_displacement_atr`;
+- [x] Swing detection on synthetic fixture DataFrames (known peaks/troughs).
+- [x] BOS/CHoCH threshold boundary cases (just under vs. just over `min_displacement_atr`;
       wick-only pierce that closes back inside).
-- [ ] Order block / FVG / liquidity-sweep detection on constructed candle sequences.
-- [ ] Session classification across all UTC boundary edges (07:00, 12:00, 16:00, 21:00).
-- [ ] EMA "compressed" classification threshold.
+- [x] Order block / FVG / liquidity-sweep detection on constructed candle sequences.
+- [x] Session classification across all UTC boundary edges (07:00, 12:00, 16:00, 21:00).
+- [x] EMA "compressed" classification threshold.
 
 **Definition of done**: `pytest tests/test_scalp_features.py -v` passes; every function is a
 pure function of a DataFrame/params (no I/O, no LLM calls).
